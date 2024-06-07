@@ -189,10 +189,6 @@ fn generate_directory_listing(path: &PathBuf) -> String {
         .unwrap();
     entries.sort();
 
-    for entry in &entries {
-        println!("{:?}", entry);
-    }
-
     let mut breadcrumbs = String::new();
     let mut current_link = String::from("/");
     for ancestor in path.ancestors().skip(1) {

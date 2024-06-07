@@ -22,7 +22,7 @@ cargo build --release
 ```
 
 ## Installing
-2. ***Move generated bin a location present in user's path***
+2. ***Move generated bin to a location present in user's path***
 
 ```
 sudo mv target/release/hdl_sv /usr/bin/
