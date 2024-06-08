@@ -280,6 +280,21 @@ fn generate_directory_listing(path: &PathBuf) -> String {
                 .size-col {{ width: 20%; }}
                 .date-col {{ width: 20%; }} 
 
+                /* Responsive design */
+                @media only screen and (max-width: 768px) {{
+                    .container {{
+                        padding: 10px;
+                        border-radius: 0;
+                        box-shadow: none;
+                    }}
+                    h1 {{
+                        font-size: 24px;
+                        margin-bottom: 20px;
+                    }}
+                    table {{
+                        font-size: 14px;
+                    }}
+                }}
             </style>
         </head>
         <body>
