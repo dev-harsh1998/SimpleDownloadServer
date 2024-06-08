@@ -213,37 +213,44 @@ fn generate_directory_listing(path: &PathBuf) -> String {
             <title>Directory Listing for {}</title>
             <style>
                 body {{
-                    font-family: 'Inter', sans-serif; 
-                    /* Gradient background - adjust colors to your liking */
-                    background: linear-gradient(135deg, #f2e7fe, #e0c3fc);
-                    color: #333;          
+                    font-family: 'Inter', sans-serif;
+                    background-color: #2C2C2C; /* Material Black background */
+                    color: #FFFFFF; /* White text */
                     margin: 0;
                     padding: 20px;
                 }}
                 .container {{
                     max-width: 960px;
-                    margin: 0 auto;        
+                    margin: 0 auto;
                     padding: 30px;
-                    background-color: #fff; /* White container */
-                    border-radius: 10px;     
-                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); 
+                    background-color: #424242; /* Darker shade of Material Black */
+                    border-radius: 10px;
+                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
                 }}
                 h1 {{
-                    color: #6829e0;       /* Purple header */
+                    color: #FF9800; /* Material Orange for heading */
                     text-align: center;
                     margin-bottom: 30px;
+                    overflow: hidden; /* Prevent text overflow */
+                    white-space: nowrap; /* Prevent wrapping */
+                    max-width: 80%; /* Limit maximum width */
+                    display: inline-block; /* Display as inline block */
+                }}
+                h1:hover {{
+                    max-width: none; /* Remove maximum width on hover */
+                    white-space: normal; /* Allow wrapping on hover */
                 }}
                 .breadcrumbs {{
                     list-style: none;
                     padding: 0;
                     margin-bottom: 20px;
+                    color: #888888; /* Lighter shade of grey for breadcrumbs */
                 }}
                 .breadcrumbs li {{
                     display: inline;
                 }}
                 .breadcrumbs li:after {{
                     content: " / ";
-                    color: #888;        
                 }}
                 .breadcrumbs li:last-child:after {{
                     content: "";
@@ -251,35 +258,33 @@ fn generate_directory_listing(path: &PathBuf) -> String {
                 table {{
                     width: 100%;
                     border-collapse: collapse;
-                    table-layout: fixed; 
+                    table-layout: fixed;
                 }}
                 th, td {{
                     padding: 15px;
                     text-align: left;
-                    border-bottom: 1px solid #eee; 
+                    border-bottom: 1px solid #616161; /* Darker shade of grey for table borders */
                 }}
                 th {{
-                    background-color: #ddd; /* Light gray header */
-                    color: #333;
-                    font-weight: 600;   
+                    background-color: #333333; /* Dark grey header */
+                    color: #FFFFFF;
+                    font-weight: 600;
                 }}
                 tr:hover {{
-                    background-color: #f5f5f5; 
+                    background-color: #616161; /* Darker shade of grey on hover */
                 }}
                 a {{
                     text-decoration: none;
-                    color: #6829e0; /* Purple links */
-                    transition: color 0.2s; 
+                    color: #42A5F5; /* Material Blue for links */
+                    transition: color 0.2s;
                 }}
                 a:hover {{
-                    color: #ff9800; /* Orange on hover */
+                    color: #FF9800; /* Material Orange on hover */
                 }}
-
                 /* Table column widths (adjust as needed) */
                 .name-col {{ width: 60%; }}
                 .size-col {{ width: 20%; }}
-                .date-col {{ width: 20%; }} 
-
+                .date-col {{ width: 20%; }}
                 /* Responsive design */
                 @media only screen and (max-width: 768px) {{
                     .container {{
@@ -300,7 +305,7 @@ fn generate_directory_listing(path: &PathBuf) -> String {
         <body>
             <div class="container">
                 <ul class="breadcrumbs">{}</ul>
-                <h1>Directory Listing for {}</h1>
+                <h1 title="{}">Directory List</h1>
                 <table>
                     <tr><th class="name-col">Name</th><th class="size-col">Size</th><th class="date-col">Last Modified</th></tr>
                     {}
@@ -344,6 +349,7 @@ fn generate_directory_listing(path: &PathBuf) -> String {
     );
     html
 }
+
 
 fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) {
     let image_map = [
