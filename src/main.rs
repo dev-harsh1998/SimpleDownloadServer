@@ -194,7 +194,7 @@ fn generate_directory_listing(path: &PathBuf) -> String {
     for ancestor in path.ancestors().skip(1) {
         if let Some(name) = ancestor.file_name() {
             breadcrumbs += &format!(
-                r#"<li><a href="{link}">{name}</a></li>"#,
+                r#"<li class="breadcrumb-item"><a href="{link}">{name}</a></li>"#,
                 link = current_link,
                 name = name.to_string_lossy()
             );
@@ -204,17 +204,22 @@ fn generate_directory_listing(path: &PathBuf) -> String {
     breadcrumbs = breadcrumbs.trim_end_matches('/').to_string();
 
     let html = format!(
-        r#"
+       r#"
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Directory Listing for {}</title>
+            <!-- Bootstrap CSS -->
+            <link
+                href="https://stackpath.bootstrapcdn.com/bootstrap/5.3.0/css/bootstrap.min.css"
+                rel="stylesheet"
+            >
             <style>
                 body {{
                     font-family: 'Inter', sans-serif;
-                    background-color: #2C2C2C; /* Material Black background */
+                    background-color: #1a1a1a; /* Material Black background */
                     color: #FFFFFF; /* White text */
                     margin: 0;
                     padding: 20px;
@@ -225,20 +230,15 @@ fn generate_directory_listing(path: &PathBuf) -> String {
                     padding: 30px;
                     background-color: #424242; /* Darker shade of Material Black */
                     border-radius: 10px;
-                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.7); /* White box shadow with fade effect */
+                    transition: box-shadow 0.3s ease-in-out; /* Smooth transition for box shadow */
                 }}
-                h1 {{
-                    color: #FF9800; /* Material Orange for heading */
-                    text-align: center;
-                    margin-bottom: 30px;
-                    overflow: hidden; /* Prevent text overflow */
-                    white-space: nowrap; /* Prevent wrapping */
-                    max-width: 80%; /* Limit maximum width */
-                    display: inline-block; /* Display as inline block */
-                }}
-                h1:hover {{
-                    max-width: none; /* Remove maximum width on hover */
-                    white-space: normal; /* Allow wrapping on hover */
+                .container:hover {{
+                  box-shadow: 
+                    0px 8px 20px rgba(150, 150, 150, 0.2), /* Bottom shadow */
+                    0px -8px 20px rgba(150, 150, 150, 0.2), /* Top shadow */
+                    8px 0px 20px rgba(150, 150, 150, 0.2), /* Right shadow */
+                    -8px 0px 20px rgba(150, 150, 150, 0.2); /* Left shadow */
                 }}
                 .breadcrumbs {{
                     list-style: none;
@@ -255,67 +255,56 @@ fn generate_directory_listing(path: &PathBuf) -> String {
                 .breadcrumbs li:last-child:after {{
                     content: "";
                 }}
+                h1 {{
+                    color: #FF9800; /* Material Orange for heading */
+                    margin-bottom: 30px;
+                }}
                 table {{
                     width: 100%;
                     border-collapse: collapse;
-                    table-layout: fixed;
                 }}
                 th, td {{
-                    padding: 15px;
+                    padding: 10px;
                     text-align: left;
-                    border-bottom: 1px solid #616161; /* Darker shade of grey for table borders */
+                    border-bottom: 1px solid #555555; /* Slightly lighter border */
                 }}
                 th {{
-                    background-color: #333333; /* Dark grey header */
-                    color: #FFFFFF;
-                    font-weight: 600;
+                    background-color: #616161; /* Dark grey for header */
                 }}
                 tr:hover {{
-                    background-color: #616161; /* Darker shade of grey on hover */
+                    background-color: #757575; /* Lighter grey on row hover */
                 }}
                 a {{
-                    text-decoration: none;
-                    color: #42A5F5; /* Material Blue for links */
-                    transition: color 0.2s;
+                     color: white; /* Material Yellow for links */
+                     text-decoration: none;
                 }}
                 a:hover {{
-                    color: #FF9800; /* Material Orange on hover */
-                }}
-                /* Table column widths (adjust as needed) */
-                .name-col {{ width: 60%; }}
-                .size-col {{ width: 20%; }}
-                .date-col {{ width: 20%; }}
-                /* Responsive design */
-                @media only screen and (max-width: 768px) {{
-                    .container {{
-                        padding: 10px;
-                        border-radius: 0;
-                        box-shadow: none;
-                    }}
-                    h1 {{
-                        font-size: 24px;
-                        margin-bottom: 20px;
-                    }}
-                    table {{
-                        font-size: 14px;
-                    }}
+                    color: #838fe9;
+                    transition: 0.2s;
+                    text-decoration: none;
                 }}
             </style>
         </head>
         <body>
             <div class="container">
-                <ul class="breadcrumbs">{}</ul>
-                <h1 title="{}">Directory List</h1>
-                <table>
-                    <tr><th class="name-col">Name</th><th class="size-col">Size</th><th class="date-col">Last Modified</th></tr>
-                    {}
+                <h1 title={}>Directory Listing</h1>
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Size</th>
+                            <th>Last Modified</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {}
+                    </tbody>
                 </table>
             </div>
         </body>
         </html>
         "#,
         path.display(),
-        breadcrumbs,
         path.display(),
         entries
             .iter()
@@ -349,7 +338,6 @@ fn generate_directory_listing(path: &PathBuf) -> String {
     );
     html
 }
-
 
 fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) {
     let image_map = [
