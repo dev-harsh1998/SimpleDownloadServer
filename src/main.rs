@@ -163,7 +163,11 @@ fn handle_client(
                 if bytes_read == 0 {
                     break;
                 }
-                stream.write_all(&buffer[..bytes_read]).unwrap();
+                // Send the buffer to the client and check for any errors
+                if (stream.write_all(&buffer[..bytes_read])).is_err() {
+                    println!("Error writing to stream for file: {}, Thread ID: {:?}", filename, std::thread::current().id());
+                    break;
+                }
             }
         } else {
             send_response(&mut stream, 404, "Not Found", "File not found");
