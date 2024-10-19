@@ -9,7 +9,7 @@ use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
 use humansize::{file_size_opts as options, FileSize};
 use rust_embed::RustEmbed;
-use std::fs::{self, File};
+use std::fs::{self, File, read_to_string};
 use std::io::{prelude::*, BufReader, Read};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -50,10 +50,20 @@ struct Cli {
     /// Allowed file extensions for download (comma-separated)
     #[arg(short, long, default_value = "zip,txt")]
     allowed_extensions: String,
+
+    #[arg(long, default_value = "password")]
+    password: String,
+
+    #[arg(long, default_value = "admin")]
+    username: String,
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    println!("Username: {}", cli.username);
+    println!("Password: {}", cli.password);
+
     let file_directory = Arc::new(Mutex::new(
         PathBuf::from(cli.directory)
             .canonicalize()
@@ -83,13 +93,99 @@ fn main() {
                 let file_directory = Arc::clone(&file_directory);
                 let allowed_extensions = Arc::clone(&allowed_extensions);
                 thread::spawn(move || {
-                    handle_client(stream, &file_directory, &allowed_extensions);
+                    route_request(stream, file_directory, allowed_extensions);
+                    // handle_client(stream, &file_directory, &allowed_extensions);
                 });
             }
             Err(e) => {
                 eprintln!("Error accepting connection: {}", e);
             }
         }
+    }
+}
+
+fn route_request(stream: TcpStream, file_directory: Arc<Mutex<String>>, allowed_extensions: Arc<Vec<String>>) {
+    let buf_reader = BufReader::new(&stream);
+    let request_line = match buf_reader.lines().next() {
+        Some(Ok(line)) => line,
+        Some(Err(e)) => {
+            eprintln!("Error reading request line: {}", e);
+            send_response(&mut stream.try_clone().unwrap(), 400, "Bad Request", "Error reading request line");
+            return;
+        }
+        None => {
+            send_response(&mut stream.try_clone().unwrap(), 400, "Bad Request", "Empty request");
+            return;
+        }
+    };
+
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+
+    match (method, path) {
+        ("GET", "/login") => handle_login(stream),
+        ("GET", _) => handle_get(stream, &file_directory, &allowed_extensions, path),
+        _ => send_response(&mut stream.try_clone().unwrap(), 405, "Method Not Allowed", "Method not allowed"),
+    }
+}
+
+fn handle_login(mut stream: TcpStream) {
+    let html = generate_login_form();
+    send_response(&mut stream, 200, "OK", &html);
+}
+
+fn handle_get(mut stream: TcpStream, file_directory: &Arc<Mutex<String>>, allowed_extensions: &Arc<Vec<String>>, path: &str) {
+
+    let buf_reader = BufReader::new(&stream);
+ 
+
+    let file_directory = file_directory.lock().unwrap();
+    let file_directory_path = PathBuf::from(&*file_directory);
+    let path = file_directory_path.join(path.trim_start_matches('/'));
+
+    if !path.exists() {
+        send_response(&mut stream, 404, "Not Found", "File or directory not found");
+        return;
+    }
+
+    if !path.starts_with(&*file_directory) {
+        send_response(&mut stream, 403, "Forbidden", "Access denied");
+        return;
+    }
+
+    let file_extension_allowed = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(|ext| allowed_extensions.iter().any(|allowed| allowed == ext))
+        .unwrap_or(false);
+
+    if !path.is_dir() && file_extension_allowed {
+        if let Ok(mut file) = File::open(&path) {
+            let file_size = file.metadata().unwrap().len();
+            let filename = path.file_name().unwrap_or_default().to_string_lossy();
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {file_size}\r\n\r\n").as_bytes()).unwrap();
+
+            const BUFFER_SIZE: usize = 1024 * 1024;
+            let mut buffer = [0; BUFFER_SIZE];
+            loop {
+                let bytes_read = file.read(&mut buffer).unwrap();
+                if bytes_read == 0 {
+                    break;
+                }
+                if (stream.write_all(&buffer[..bytes_read])).is_err() {
+                    println!("Error writing to stream for file: {}, Thread ID: {:?}", filename, std::thread::current().id());
+                    break;
+                }
+            }
+        } else {
+            send_response(&mut stream, 404, "Not Found", "File not found");
+        }
+    } else if path.is_dir() {
+        let html = generate_directory_listing(&path);
+        send_response(&mut stream, 200, "OK", &html);
+    } else {
+        send_response(&mut stream, 403, "Forbidden", "Only allowed files can be downloaded");
     }
 }
 
@@ -185,7 +281,17 @@ fn handle_client(
     }
 }
 
+fn generate_login_form() -> String {
+    let template = read_to_string("assets/login_form.html")
+        .expect("Unable to read login form template");
+
+    template
+}
+
 fn generate_directory_listing(path: &PathBuf) -> String {
+    let template = read_to_string("assets/directory_listing.html")
+        .expect("Unable to read directory listing template");
+
     let mut entries: Vec<_> = fs::read_dir(path)
         .unwrap_or_else(|_| panic!("Unable to read directory: {:?}", path))
         .map(|res| res.map(|e| e.path()))
@@ -207,140 +313,39 @@ fn generate_directory_listing(path: &PathBuf) -> String {
     }
     breadcrumbs = breadcrumbs.trim_end_matches('/').to_string();
 
-    let html = format!(
-       r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Directory Listing for {}</title>
-            <!-- Bootstrap CSS -->
-            <link
-                href="https://stackpath.bootstrapcdn.com/bootstrap/5.3.0/css/bootstrap.min.css"
-                rel="stylesheet"
-            >
-            <style>
-                body {{
-                    font-family: 'Inter', sans-serif;
-                    background-color: #1a1a1a; /* Material Black background */
-                    color: #FFFFFF; /* White text */
-                    margin: 0;
-                    padding: 20px;
-                }}
-                .container {{
-                    max-width: 960px;
-                    margin: 0 auto;
-                    padding: 30px;
-                    background-color: #424242; /* Darker shade of Material Black */
-                    border-radius: 10px;
-                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.7); /* White box shadow with fade effect */
-                    transition: box-shadow 0.3s ease-in-out; /* Smooth transition for box shadow */
-                }}
-                .container:hover {{
-                  box-shadow: 
-                    0px 8px 20px rgba(150, 150, 150, 0.2), /* Bottom shadow */
-                    0px -8px 20px rgba(150, 150, 150, 0.2), /* Top shadow */
-                    8px 0px 20px rgba(150, 150, 150, 0.2), /* Right shadow */
-                    -8px 0px 20px rgba(150, 150, 150, 0.2); /* Left shadow */
-                }}
-                .breadcrumbs {{
-                    list-style: none;
-                    padding: 0;
-                    margin-bottom: 20px;
-                    color: #888888; /* Lighter shade of grey for breadcrumbs */
-                }}
-                .breadcrumbs li {{
-                    display: inline;
-                }}
-                .breadcrumbs li:after {{
-                    content: " / ";
-                }}
-                .breadcrumbs li:last-child:after {{
-                    content: "";
-                }}
-                h1 {{
-                    color: #FF9800; /* Material Orange for heading */
-                    margin-bottom: 30px;
-                }}
-                table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                }}
-                th, td {{
-                    padding: 10px;
-                    text-align: left;
-                    border-bottom: 1px solid #555555; /* Slightly lighter border */
-                }}
-                th {{
-                    background-color: #616161; /* Dark grey for header */
-                }}
-                tr:hover {{
-                    background-color: #757575; /* Lighter grey on row hover */
-                }}
-                a {{
-                     color: white; /* Material Yellow for links */
-                     text-decoration: none;
-                }}
-                a:hover {{
-                    color: #838fe9;
-                    transition: 0.2s;
-                    text-decoration: none;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1 title={}>Directory Listing</h1>
-                <table class="table table-hover">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Size</th>
-                            <th>Last Modified</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
-            </div>
-        </body>
-        </html>
-        "#,
-        path.display(),
-        path.display(),
-        entries
-            .iter()
-            .map(|path| {
-                let metadata = fs::metadata(path).unwrap();
-                let file_size = metadata.len().file_size(options::BINARY).unwrap(); // Format file size
-                let last_modified = metadata
-                    .modified()
-                    .unwrap()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let naive_datetime =
-                    chrono::NaiveDateTime::from_timestamp_opt(last_modified as i64, 0).unwrap();
-                let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
-                let last_modified_str = datetime.format("%d-%m-%Y %H:%M:%S").to_string(); // format the date and time
+    let entries_html = entries
+        .iter()
+        .map(|path| {
+            let metadata = fs::metadata(path).unwrap();
+            let file_size = metadata.len().file_size(options::BINARY).unwrap(); // Format file size
+            let last_modified = metadata
+                .modified()
+                .unwrap()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let naive_datetime =
+                chrono::NaiveDateTime::from_timestamp_opt(last_modified as i64, 0).unwrap();
+            let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
+            let last_modified_str = datetime.format("%d-%m-%Y %H:%M:%S").to_string(); // format the date and time
 
-                let current_dir = path.parent().unwrap();
+            let current_dir = path.parent().unwrap();
 
-                let relative_path = path.strip_prefix(current_dir).unwrap();
+            let relative_path = path.strip_prefix(current_dir).unwrap();
 
-                format!(
-                    "<tr><td><a href=\"{}\">{}</a></td><td>{}</td><td>{}</td></tr>",
-                    relative_path.display(),
-                    path.file_name().unwrap().to_string_lossy(),
-                    file_size,
-                    last_modified_str
-                )
-            })
-            .collect::<String>()
-    );
-    html
+            format!(
+                "<tr><td><a href=\"{}\">{}</a></td><td>{}</td><td>{}</td></tr>",
+                relative_path.display(),
+                path.file_name().unwrap().to_string_lossy(),
+                file_size,
+                last_modified_str
+            )
+        })
+        .collect::<String>();
+    template
+        .replace("{path}", &path.display().to_string())
+        .replace("{path}", &path.display().to_string())
+        .replace("{directory_listing}", &entries_html)
 }
 
 fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) {
