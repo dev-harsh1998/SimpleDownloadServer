@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Directory Listing for {path}</title>
+    <!-- Bootstrap CSS -->
+    <link
+    href="https://stackpath.bootstrapcdn.com/bootstrap/5.3.0/css/bootstrap.min.css"
+    rel="stylesheet"
+    >
+    <style>
+    body {
+        font-family: 'Inter', sans-serif;
+        background-color: #1a1a1a; /* Material Black background */
+        color: #FFFFFF; /* White text */
+        margin: 0;
+        padding: 20px;
+    }
+    .container {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 30px;
+        background-color: #424242; /* Darker shade of Material Black */
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.7); /* White box shadow with fade effect */
+        transition: box-shadow 0.3s ease-in-out; /* Smooth transition for box shadow */
+    }
+    .container:hover {
+        box-shadow: 
+        0px 8px 20px rgba(150, 150, 150, 0.2), /* Bottom shadow */
+        0px -8px 20px rgba(150, 150, 150, 0.2), /* Top shadow */
+        8px 0px 20px rgba(150, 150, 150, 0.2), /* Right shadow */
+        -8px 0px 20px rgba(150, 150, 150, 0.2); /* Left shadow */
+    }
+    .breadcrumbs {
+        list-style: none;
+        padding: 0;
+        margin-bottom: 20px;
+        color: #888888; /* Lighter shade of grey for breadcrumbs */
+    }
+    .breadcrumbs li {
+        display: inline;
+    }
+    .breadcrumbs li:after {
+        content: " / ";
+    }
+    .breadcrumbs li:last-child:after {
+        content: "";
+    }
+    h1 {
+        color: #FF9800; /* Material Orange for heading */
+        margin-bottom: 30px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    th, td {
+        padding: 10px;
+        text-align: left;
+        border-bottom: 1px solid #555555; /* Slightly lighter border */
+    }
+    th {
+        background-color: #616161; /* Dark grey for header */
+    }
+    tr:hover {
+        background-color: #757575; /* Lighter grey on row hover */
+    }
+    a {
+        color: white; /* Material Yellow for links */
+        text-decoration: none;
+    }
+    a:hover {
+        color: #838fe9;
+        transition: 0.2s;
+        text-decoration: none;
+    }
+ 
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1 title={path}>Directory Listing</h1>
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Size</th>
+                    <th>Last Modified</th>
+                </tr>
+            </thead>
+            <tbody>
+                {directory_listing}
+            </tbody>
+        </table>
+    </div>
+    <script>
+    </script>
+</body>
+</html>

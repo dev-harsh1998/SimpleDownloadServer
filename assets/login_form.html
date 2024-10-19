@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDS</title>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a1a1a; /* Material Black background */
+            color: #FFFFFF; /* White text */
+            margin: 0;
+            padding: 20px;
+        }
+        .login-form {
+            margin-bottom: 30px;
+            background-color: #333333; /* Dark grey background for form */
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5); /* Subtle shadow for form */
+            min-width: 200px;
+        }
+        .login-form input {
+            margin-bottom: 10px;
+            background-color: #555555; /* Slightly lighter grey for input fields */
+            border: none;
+            color: #FFFFFF; /* White text for input fields */
+            padding: 10px;
+            min-width: 200px;
+        }
+        .login-form input:focus {
+            background-color: #666666; /* Slightly lighter grey on focus */
+            outline: none;
+            box-shadow: 0 0 5px rgba(255, 152, 0, 0.5); /* Orange glow on focus */
+            min-width: 200px;
+        }
+        .login-form label {
+            color: #FF9800; /* Material Orange for labels */
+        }
+        .login-form button {
+            background-color: #FF9800; /* Material Orange for button */
+            border: none;
+            color: #FFFFFF; /* White text for button */
+            padding: 10px 20px;
+            border-radius: 5px;
+            transition: background-color 0.3s ease-in-out; /* Smooth transition for button */
+        }
+        .login-form button:hover {
+            background-color: #e68900; /* Darker shade of orange on hover */
+        }
+        .form-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            padding: 20px;
+            min-width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <form class="login-form" method="post" action="/login">
+            <div class="mb-3">
+                <input type="text" class="form-control" id="username" name="username" placeholder="Username" required>
+            </div>
+            <div class="mb-3">
+                <input type="password" class="form-control" id="password" name="password" placeholder="Password" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+    </div>
+</body>
+</html></div>
