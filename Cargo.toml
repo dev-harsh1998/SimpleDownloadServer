@@ -8,3 +8,5 @@ chrono = "0.4.26"
 clap = { version = "4.5.6", features = ["derive"] }
 humansize = "1.1.1" 
 rust-embed = "6"
+threadpool = "1.8.1"
+glob = "0.3.2"

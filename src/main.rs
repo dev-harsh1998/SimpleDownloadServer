@@ -4,18 +4,19 @@
  * Author: Harshit Jain
  * Email: reach@harsh1998.dev
  */
-
 use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
+use glob::Pattern;
 use humansize::{file_size_opts as options, FileSize};
 use rust_embed::RustEmbed;
 use std::fs::{self, File};
-use std::io::{prelude::*, BufReader, Read};
+use std::io::{prelude::*, BufReader, Read, Seek, SeekFrom};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::UNIX_EPOCH;
+use threadpool::ThreadPool;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -47,9 +48,12 @@ struct Cli {
     /// Port number to listen on
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
-    /// Allowed file extensions for download (comma-separated)
-    #[arg(short, long, default_value = "zip,txt")]
+    /// Allowed file extensions for download (comma-separated, supports wildcards)
+    #[arg(short, long, default_value = "*.zip,*.txt")]
     allowed_extensions: String,
+    /// Number of threads in the thread pool
+    #[arg(short, long, default_value_t = 4)]
+    threads: usize,
 }
 
 fn main() {
@@ -64,8 +68,8 @@ fn main() {
     let allowed_extensions = Arc::new(
         cli.allowed_extensions
             .split(',')
-            .map(|ext| ext.trim().to_string())
-            .collect(),
+            .map(|ext| Pattern::new(ext.trim()).unwrap())
+            .collect::<Vec<Pattern>>(),
     );
 
     let listener = TcpListener::bind(format!("{}:{}", cli.listen, cli.port)).unwrap();
@@ -73,16 +77,18 @@ fn main() {
         "Listening on {}:{} for directory {} (allowed extensions: {:?})",
         cli.listen,
         cli.port,
-        file_directory.lock().unwrap().to_string(),
+        file_directory.lock().unwrap_or_else(|e| e.into_inner()).to_string(),
         allowed_extensions
     );
+
+    let pool = ThreadPool::new(cli.threads);
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let file_directory = Arc::clone(&file_directory);
                 let allowed_extensions = Arc::clone(&allowed_extensions);
-                thread::spawn(move || {
+                pool.execute(move || {
                     handle_client(stream, &file_directory, &allowed_extensions);
                 });
             }
@@ -96,7 +102,7 @@ fn main() {
 fn handle_client(
     mut stream: TcpStream,
     file_directory: &Arc<Mutex<String>>,
-    download_extensions: &Arc<Vec<String>>,
+    download_extensions: &Arc<Vec<Pattern>>,
 ) {
     let buf_reader = BufReader::new(&mut stream);
 
@@ -120,7 +126,7 @@ fn handle_client(
 
     let requested_path = request_line.split_whitespace().nth(1);
 
-    let file_directory = file_directory.lock().unwrap();
+    let file_directory = file_directory.lock().unwrap_or_else(|e| e.into_inner());
 
     let file_directory_path = PathBuf::from(&*file_directory);
 
@@ -144,11 +150,12 @@ fn handle_client(
         return;
     }
 
-    let file_extension_allowed = path
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(|ext| download_extensions.iter().any(|allowed| allowed == ext))
-        .unwrap_or(false);
+    let file_extension_allowed = if let Some(ext) = path.extension().and_then(std::ffi::OsStr::to_str) {
+        download_extensions.iter().any(|pattern| pattern.matches(&format!(".{}", ext)))
+    } else {
+        // Allow files with no extension if no patterns are specified or if a pattern allows it
+        download_extensions.is_empty() || download_extensions.iter().any(|pattern| pattern.matches(""))
+    };
 
     if !path.is_dir() && file_extension_allowed {
         if let Ok(mut file) = File::open(&path) {
@@ -238,7 +245,7 @@ fn generate_directory_listing(path: &PathBuf) -> String {
                     transition: box-shadow 0.3s ease-in-out; /* Smooth transition for box shadow */
                 }}
                 .container:hover {{
-                  box-shadow: 
+                  box-shadow:
                     0px 8px 20px rgba(150, 150, 150, 0.2), /* Bottom shadow */
                     0px -8px 20px rgba(150, 150, 150, 0.2), /* Top shadow */
                     8px 0px 20px rgba(150, 150, 150, 0.2), /* Right shadow */
@@ -373,6 +380,10 @@ fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, bo
         response_body.len()
     );
 
-    stream.write_all(response.as_bytes()).unwrap();
-    stream.write_all(&response_body).unwrap();
+    stream.write_all(response.as_bytes()).unwrap_or_else(|e| {
+        eprintln!("Error writing response: {}", e);
+    });
+    stream.write_all(&response_body).unwrap_or_else(|e| {
+        eprintln!("Error writing response body: {}", e);
+    });
 }
