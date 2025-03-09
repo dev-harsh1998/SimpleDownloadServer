@@ -26,7 +26,7 @@ struct Assets;
 #[derive(Parser)]
 #[command(
     author = "Harshit Jain",
-    version = "1.0.0",
+    version = "1.5.0",
     long_about = "This is a simple configurable download server that serves files from a directory.
 It can be used to share files with others or to download files from a remote server.
 The server can be configured to serve only specific file extensions and can be run on a specific host and port.
