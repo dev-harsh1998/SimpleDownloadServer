@@ -4,20 +4,21 @@
  * Author: Harshit Jain
  * Email: reach@harsh1998.dev
  */
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local}; // Removed unused import TimeZone
 use clap::Parser;
 use glob::Pattern;
 use humansize::{file_size_opts as options, FileSize};
 use rust_embed::RustEmbed;
-use std::fs::{self, File};
-use std::io::{prelude::*, BufReader, Read, Seek, SeekFrom};
-use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::fs::{self, File}; // Removed unused imports Metadata, ReadDir
+use std::io::{prelude::*, Read, Seek, SeekFrom, ErrorKind}; // Removed unused import Error as IoError
+use std::net::{TcpListener, TcpStream, SocketAddr, Shutdown};
+use std::path::{Path, PathBuf, Component};
+use std::sync::{Arc, Mutex}; // Removed unused import MutexGuard
 use std::str::FromStr;
-use std::time::UNIX_EPOCH;
+use std::time::SystemTime;
 use threadpool::ThreadPool;
+use std::thread;
+use std::ffi::OsStr;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
@@ -53,44 +54,61 @@ struct Cli {
     #[arg(short, long, default_value = "*.zip,*.txt")]
     allowed_extensions: String,
     /// Number of threads in the thread pool
-    #[arg(short, long, default_value_t = 4)]
+    #[arg(short, long, default_value_t = 64)]
     threads: usize,
+    /// Chunk size for reading files (in bytes)
+    /// This is the size of the buffer used to read files in chunks
+    #[arg(short, long, default_value_t = 1024)]
+    chunk_size: usize,
 }
 
 fn main() {
+    if let Err(e) = run_server() {
+        eprintln!("Server error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
     let file_directory = Arc::new(Mutex::new(
-        PathBuf::from(cli.directory)
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
+        PathBuf::from(cli.directory.clone()).canonicalize().map_err(|e| format!("Failed to canonicalize directory path: {}", e))?
     ));
+
+    // Validate directory existence and access
+    if !is_directory(&file_directory).map_err(|e| format!("Error checking directory: {}", e))? {
+        return Err(From::from(format!("Directory '{}' does not exist or is not accessible.", cli.directory.display())));
+    }
+
     let allowed_extensions = Arc::new(
         cli.allowed_extensions
             .split(',')
-            .map(|ext| Pattern::new(ext.trim()).unwrap())
-            .collect::<Vec<Pattern>>(),
+            .map(|ext| Pattern::new(ext.trim()).map_err(|e| format!("Invalid extension pattern '{}': {}", ext.trim(), e)))
+            .collect::<Result<Vec<Pattern>, String>>().map_err(|e| format!("Error parsing allowed extensions: {}", e))?
     );
 
-    let listener = TcpListener::bind(format!("{}:{}", cli.listen, cli.port)).unwrap();
+    let listener = TcpListener::bind(format!("{}:{}", cli.listen, cli.port)).map_err(|e| format!("Failed to bind to address {}:{}: {}", cli.listen, cli.port, e))?;
     println!(
         "Listening on {}:{} for directory {} (allowed extensions: {:?})",
         cli.listen,
         cli.port,
-        file_directory.lock().unwrap_or_else(|e| e.into_inner()).to_string(),
+        file_directory.lock().map_err(|_| "Failed to lock directory mutex".to_string())?.display(),
         allowed_extensions
     );
 
     let pool = ThreadPool::new(cli.threads);
 
-    for stream in listener.incoming() {
-        match stream {
+    for stream_result in listener.incoming() {
+        match stream_result {
             Ok(stream) => {
-                let file_directory = Arc::clone(&file_directory);
-                let allowed_extensions = Arc::clone(&allowed_extensions);
+                let file_directory_arc = Arc::clone(&file_directory);
+                let allowed_extensions_arc = Arc::clone(&allowed_extensions);
+                let chunk_size = cli.chunk_size;
                 pool.execute(move || {
-                    handle_client(stream, &file_directory, &allowed_extensions);
+                    if let Err(e) = handle_client(stream, &file_directory_arc, &allowed_extensions_arc, chunk_size) {
+                        eprintln!("Error handling client: {}", e);
+                    }
                 });
             }
             Err(e) => {
@@ -98,27 +116,45 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
+
+fn is_directory(file_directory: &Arc<Mutex<PathBuf>>) -> Result<bool, String> {
+    let dir_guard_result = file_directory.lock().map_err(|_| "Failed to lock directory mutex".to_string())?;
+    Ok(Path::new(&*dir_guard_result).is_dir())
+}
+
 
 fn handle_client(
     mut stream: TcpStream,
-    file_directory: &Arc<Mutex<String>>,
+    file_directory: &Arc<Mutex<PathBuf>>,
     download_extensions: &Arc<Vec<Pattern>>,
-) {
+    chunk_size: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer_addr = stream.peer_addr().map_err(|e| format!("Failed to get peer address: {}", e))?;
+    println!("[{:?}] handle_client started for client: {:?}", thread::current().id(), peer_addr);
     let mut buffer = [0; 1024];
-    let mut request_line = String::new();
+    let request_line: String; // Declare request_line here without initial assignment
     let mut headers = Vec::new();
 
     // Read the request line
-    let bytes_read = stream.read(&mut buffer).unwrap();
+    let bytes_read_result = stream.read(&mut buffer);
+    let bytes_read = match bytes_read_result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("[{:?}] Error reading request from {}: {}", thread::current().id(), peer_addr, e);
+            return Ok(()); // Don't propagate, just log and close connection
+        }
+    };
+
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
     let mut lines = request.lines();
 
     if let Some(line) = lines.next() {
-        request_line = line.to_string();
+        request_line = line.to_string(); // Assign value here
     } else {
-        send_response(&mut stream, 400, "Bad Request", "Empty request");
-        return;
+        send_response(&mut stream, 400, "Bad Request", "Empty request").map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+        return Ok(());
     }
 
     // Read the headers
@@ -126,37 +162,58 @@ fn handle_client(
         if line.is_empty() {
             break;
         }
-        println!("{}", line);
         headers.push(line.to_string());
+    }
+
+    // Print the request line and headers (consider using a logger for more structured logging)
+    println!("[{:?}] Request from {}: {}", thread::current().id(), peer_addr, request_line);
+    for header in &headers {
+        println!("[{:?}] Header from {}: {}", thread::current().id(), peer_addr, header);
     }
 
     let requested_path = request_line.split_whitespace().nth(1);
 
-    let file_directory = file_directory.lock().unwrap_or_else(|e| e.into_inner());
-
-    let file_directory_path = PathBuf::from(&*file_directory);
-
-    let path = match requested_path {
-        Some(path) if path.starts_with('/') => {
-            file_directory_path.join(path.trim_start_matches('/'))
-        }
-        _ => {
-            send_response(&mut stream, 400, "Bad Request", "Invalid request path");
-            return;
+    let file_directory_guard_result = file_directory.lock().map_err(|_| "Failed to lock directory mutex".to_string());
+    let file_directory_guard = match file_directory_guard_result {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("[{:?}] Error locking directory mutex for client {}: {}", thread::current().id(), peer_addr, e);
+            send_response(&mut stream, 500, "Internal Server Error", "Failed to access server directory").map_err(|e| format!("Failed to send error response to {}: {}", peer_addr, e))?;
+            return Ok(());
         }
     };
 
+    let path_result: Result<PathBuf, String> = match requested_path {
+        Some(path) if path.starts_with('/') => {
+            Ok(file_directory_guard.join(path.trim_start_matches('/')))
+        }
+        _ => {
+            send_response(&mut stream, 400, "Bad Request", "Invalid request path").map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+            return Ok(());
+        }
+    };
+
+    let path = match path_result {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[{:?}] Error processing path for client {}: {}", thread::current().id(), peer_addr, e);
+            return Ok(());
+        }
+    };
+
+
     if !path.exists() {
-        send_response(&mut stream, 404, "Not Found", "File or directory not found");
-        return;
+        send_response(&mut stream, 404, "Not Found", "File or directory not found").map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+        return Ok(());
     }
 
-    if !path.starts_with(&*file_directory) {
-        send_response(&mut stream, 403, "Forbidden", "Access denied");
-        return;
+    // Security: Path traversal check
+    if !path.starts_with(&*file_directory_guard) {
+        send_response(&mut stream, 403, "Forbidden", "Access denied").map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+        return Ok(());
     }
 
-    let file_extension_allowed = if let Some(ext) = path.extension().and_then(std::ffi::OsStr::to_str) {
+    let file_extension_allowed = if let Some(ext) = path.extension().and_then(OsStr::to_str) {
         download_extensions.iter().any(|pattern| pattern.matches(&format!(".{}", ext)))
     } else {
         // Allow files with no extension if no patterns are specified or if a pattern allows it
@@ -164,89 +221,216 @@ fn handle_client(
     };
 
     if !path.is_dir() && file_extension_allowed {
-        if let Ok(mut file) = File::open(&path) {
-            let file_size = file.metadata().unwrap().len();
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-
-            let mut range_header = String::new();
-            for header in headers {
-                if header.starts_with("Range: bytes=") {
-                    range_header = header.trim_start_matches("Range: bytes=").to_string();
-                    break;
-                }
-            }
-
-            let mut start_byte = 0;
-            let mut end_byte = file_size - 1;
-
-            if !range_header.is_empty() {
-                let range_parts: Vec<&str> = range_header.split('-').collect();
-                if range_parts.len() == 2 {
-                    if let Ok(start) = u64::from_str(range_parts[0]) {
-                        start_byte = start;
-                    }
-                    if let Ok(end) = u64::from_str(range_parts[1]) {
-                        end_byte = end;
-                    }
-                }
-            }
-
-            let content_length = end_byte - start_byte + 1;
-
-            if start_byte >= file_size {
-                send_response(&mut stream, 416, "Requested Range Not Satisfiable", "Range not satisfiable");
-                return;
-            }
-
-            file.seek(SeekFrom::Start(start_byte)).unwrap();
-
-            let mut buffer = vec![0; content_length as usize];
-            file.read_exact(&mut buffer).unwrap();
-
-            let response = format!(
-                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {content_length}\r\n\r\n",
-                start_byte, end_byte, file_size
-            );
-
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.write_all(&buffer).unwrap();
-        } else {
-            send_response(&mut stream, 404, "Not Found", "File not found");
-        }
+        serve_file(&mut stream, &path, headers, chunk_size, peer_addr)?;
     } else if path.is_dir() {
-        let html = generate_directory_listing(&path);
-        send_response(&mut stream, 200, "OK", &html);
+        serve_directory(&mut stream, &path, peer_addr)?;
     } else {
         send_response(
             &mut stream,
             403,
             "Forbidden",
             "Only allowed files can be downloaded",
-        );
+        ).map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
     }
+    println!("[{:?}] handle_client finished for client: {:?}", thread::current().id(), peer_addr);
+    Ok(())
 }
 
-fn generate_directory_listing(path: &PathBuf) -> String {
-    let mut entries: Vec<_> = fs::read_dir(path)
-        .unwrap_or_else(|_| panic!("Unable to read directory: {:?}", path))
-        .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+fn serve_file(stream: &mut TcpStream, path: &PathBuf, headers: Vec<String>, chunk_size: usize, peer_addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    println!("[{:?}] serve_file started for: {:?} client: {:?}", thread::current().id(), path, peer_addr);
+    println!("[{:?}] Opening file: {:?} for client: {:?}", thread::current().id(), path, peer_addr);
+    let file_result = File::open(path);
+    let mut file = match file_result {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[{:?}] Failed to open file {:?} for client {}: {}", thread::current().id(), path, peer_addr, e);
+            send_response(stream, 500, "Internal Server Error", "Failed to open file").map_err(|e| format!("Failed to send error response to {}: {}", peer_addr, e))?;
+            return Ok(());
+        }
+    };
+    println!("[{:?}] File opened successfully: {:?} for client {:?}", thread::current().id(), path, peer_addr);
+
+    let metadata_result = file.metadata();
+    let file_size: u64 = match metadata_result {
+        Ok(metadata) => metadata.len(),
+        Err(e) => {
+            eprintln!("[{:?}] Failed to get metadata for {:?} for client {}: {}", thread::current().id(), path, peer_addr, e);
+            send_response(stream, 500, "Internal Server Error", "Failed to read file metadata").map_err(|e| format!("Failed to send error response to {}: {}", peer_addr, e))?;
+            return Ok(());
+        }
+    };
+    let filename_os = path.file_name().ok_or_else(|| format!("No filename for path {:?}", path))?;
+    let filename = filename_os.to_string_lossy();
+
+    let mut range_header = String::new();
+    for header in headers {
+        if header.starts_with("Range: bytes=") {
+            range_header = header.trim_start_matches("Range: bytes=").to_string();
+            break;
+        }
+    }
+
+    let mut start_byte = 0;
+    let mut end_byte = file_size - 1;
+
+    let response: String;
+    if !range_header.is_empty() {
+        let range_parts: Vec<&str> = range_header.split('-').collect();
+        if range_parts.len() == 2 {
+            if let Ok(start) = u64::from_str(range_parts[0]) {
+                start_byte = start;
+            }
+            if let Ok(end) = u64::from_str(range_parts[1]) {
+                end_byte = end;
+            }
+        }
+        // Send 206 Partial Content if Range header is present
+        response = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Disposition: attachment; filename=\"{}\"\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n", // ADDED Content-Type header
+            start_byte, end_byte, file_size, filename, end_byte - start_byte + 1
+        );
+    } else {
+        // Send 200 OK if no Range header is present
+        response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"{}\"\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n", // ADDED Content-Type header
+            filename, file_size
+        );
+    }
+
+    if let Err(e) = stream.write_all(response.as_bytes()) {
+        if e.kind() == ErrorKind::BrokenPipe {
+            println!("[{:?}] Client disconnected (BrokenPipe) during header write for {:?} client {}: Broken pipe", thread::current().id(), path, peer_addr);
+            return Ok(()); // Gracefully handle broken pipe
+        }
+        eprintln!("[{:?}] Error writing header to client {} for {:?}: {}", thread::current().id(), peer_addr, path, e);
+        return Err(e.into()); // Propagate other errors
+    }
+
+
+    if start_byte >= file_size {
+        send_response(stream, 416, "Requested Range Not Satisfiable", "Range not satisfiable").map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+        return Ok(());
+    }
+
+    let seek_result = file.seek(SeekFrom::Start(start_byte));
+    if let Err(e) = seek_result {
+        eprintln!("[{:?}] Failed to seek file {:?} for client {} to byte {}: {}", thread::current().id(), path, peer_addr, start_byte, e);
+        send_response(stream, 500, "Internal Server Error", "Failed to seek file").map_err(|e| format!("Failed to send error response to {}: {}", peer_addr, e))?;
+        return Ok(());
+    }
+
+    let mut bytes_remaining = (end_byte - start_byte + 1) as usize;
+    let mut read_buffer = vec![0; chunk_size];
+
+    while bytes_remaining > 0 {
+        let bytes_to_read = std::cmp::min(bytes_remaining, chunk_size);
+        let bytes_read_res = file.read(&mut read_buffer[..bytes_to_read]);
+        match bytes_read_res { // Modified to use match and log errors
+            Ok(bytes_read) => {
+                if bytes_read == 0 {
+                    println!("[{:?}] End of file {:?} reached for client {}", thread::current().id(), path, peer_addr);
+                    break; // End of file reached
+                }
+                let write_result = stream.write_all(&read_buffer[..bytes_read]);
+                match write_result {
+                    Ok(_) => {}, // Successfully wrote chunk
+                    Err(e) => {
+                        if e.kind() == ErrorKind::BrokenPipe {
+                            println!("[{:?}] Client disconnected (BrokenPipe) during file transfer for {:?} client {}", thread::current().id(), path, peer_addr);
+                            return Ok(()); // Gracefully handle broken pipe
+                        } else {
+                            eprintln!("[{:?}] Error writing data chunk to client {} for {:?}: {}", thread::current().id(), peer_addr, path, e);
+                            // Explicitly close the stream on *any* write error (except BrokenPipe)
+                            println!("[{:?}] Attempting to shutdown and close stream due to write error for client {}", thread::current().id(), peer_addr); // Log before shutdown
+                            if let Err(shutdown_err) = stream.shutdown(Shutdown::Both) {
+                                eprintln!("[{:?}] Error shutting down stream for client {}: {}", thread::current().id(), peer_addr, shutdown_err);
+                            }
+                            if let Err(close_err) = stream.take_error() { // Consume and log error from `take_error`
+                                eprintln!("[{:?}] Error closing stream (take_error) for client {}: {}", thread::current().id(), peer_addr, close_err);
+                            }
+                            println!("[{:?}] Stream shutdown and attempted close for client {}", thread::current().id(), peer_addr); // Log after shutdown
+                            return Ok(()); // Exit handler, connection is now explicitly closed (or attempted to be)
+                        }
+                    }
+                }
+                bytes_remaining -= bytes_read;
+            }
+            Err(e) => { // Log read errors
+                eprintln!("[{:?}] Error reading file {:?} for client {}: {}", thread::current().id(), path, peer_addr, e);
+                return Ok(()); // Exit handler for this client on read error
+            }
+        }
+    }
+    println!("[{:?}] serve_file finished for: {:?} client: {:?}", thread::current().id(), path, peer_addr);
+    Ok(()) // Indicate file serving done successfully
+}
+
+
+fn serve_directory(stream: &mut TcpStream, path: &PathBuf, peer_addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    println!("[{:?}] serve_directory started for: {:?} client: {:?}", thread::current().id(), path, peer_addr);
+    let html_result = generate_directory_listing(path);
+    match html_result {
+        Ok(html) => {
+            send_response(stream, 200, "OK", &html).map_err(|e| format!("Failed to send response to {}: {}", peer_addr, e))?;
+        }
+        Err(e) => {
+            eprintln!("[{:?}] Error generating directory listing for {:?} client {}: {}", thread::current().id(), path, peer_addr, e);
+            send_response(stream, 500, "Internal Server Error", "Failed to generate directory listing").map_err(|e| format!("Failed to send error response to {}: {}", peer_addr, e))?;
+        }
+    }
+    println!("[{:?}] serve_directory finished for: {:?} client: {:?}", thread::current().id(), path, peer_addr);
+    Ok(()) // Indicate directory serving done successfully
+}
+
+
+fn generate_directory_listing(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    let read_dir_result = fs::read_dir(path);
+    let entries_iter = match read_dir_result {
+        Ok(rd) => rd,
+        Err(e) => return Err(From::from(format!("Failed to read directory '{}': {}", path.display(), e))),
+    };
+
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry_result in entries_iter {
+        match entry_result {
+            Ok(entry) => {
+                entries.push(entry.path());
+            }
+            Err(e) => {
+                eprintln!("Warning: Skipping entry due to error: {}", e); // Log, but don't fail directory listing entirely
+            }
+        }
+    }
     entries.sort();
 
     let mut breadcrumbs = String::new();
     let mut current_link = String::from("/");
     for ancestor in path.ancestors().skip(1) {
-        if let Some(name) = ancestor.file_name() {
+        if let Some(name_os) = ancestor.file_name() {
+            let name = name_os.to_string_lossy();
             breadcrumbs += &format!(
                 r#"<li class="breadcrumb-item"><a href="{link}">{name}</a></li>"#,
                 link = current_link,
-                name = name.to_string_lossy()
+                name = name
             );
-            current_link = format!("{}/{}", current_link, name.to_string_lossy());
+            current_link = format!("{}/{}", current_link, name);
         }
     }
     breadcrumbs = breadcrumbs.trim_end_matches('/').to_string();
+
+    let mut table_rows_html = String::new();
+    for path in entries {
+        let row_html_result = generate_directory_row_html(&path);
+        match row_html_result {
+            Ok(row_html) => {
+                table_rows_html += &row_html;
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not generate table row for path '{}': {}", path.display(), e); // Log, but continue directory listing
+            }
+        }
+    }
+
 
     let html = format!(
        r#"
@@ -256,7 +440,6 @@ fn generate_directory_listing(path: &PathBuf) -> String {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Directory Listing for {}</title>
-            <!-- Bootstrap CSS -->
             <link
                 href="https://stackpath.bootstrapcdn.com/bootstrap/5.3.0/css/bootstrap.min.css"
                 rel="stylesheet"
@@ -332,6 +515,9 @@ fn generate_directory_listing(path: &PathBuf) -> String {
         </head>
         <body>
             <div class="container">
+                <ul class="breadcrumbs">
+                    {}
+                </ul>
                 <h1 title={}>Directory Listing</h1>
                 <table class="table table-hover">
                     <thead>
@@ -350,41 +536,52 @@ fn generate_directory_listing(path: &PathBuf) -> String {
         </html>
         "#,
         path.display(),
+        breadcrumbs,
         path.display(),
-        entries
-            .iter()
-            .map(|path| {
-                let metadata = fs::metadata(path).unwrap();
-                let file_size = metadata.len().file_size(options::BINARY).unwrap(); // Format file size
-                let last_modified = metadata
-                    .modified()
-                    .unwrap()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let naive_datetime =
-                    chrono::NaiveDateTime::from_timestamp_opt(last_modified as i64, 0).unwrap();
-                let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
-                let last_modified_str = datetime.format("%d-%m-%Y %H:%M:%S").to_string(); // format the date and time
-
-                let current_dir = path.parent().unwrap();
-
-                let relative_path = path.strip_prefix(current_dir).unwrap();
-
-                format!(
-                    "<tr><td><a href=\"{}\">{}</a></td><td>{}</td><td>{}</td></tr>",
-                    relative_path.display(),
-                    path.file_name().unwrap().to_string_lossy(),
-                    file_size,
-                    last_modified_str
-                )
-            })
-            .collect::<String>()
+        table_rows_html
     );
-    html
+    Ok(html)
 }
 
-fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) {
+fn generate_directory_row_html(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    let metadata = fs::metadata(path).map_err(|e| format!("Failed to get metadata for '{}': {}", path.display(), e))?;
+    let file_size_human = metadata.len().file_size(options::BINARY).map_err(|e| format!("Failed to format file size for '{}': {}", path.display(), e))?;
+    let last_modified: SystemTime = metadata.modified().map_err(|e| format!("Failed to get modification time for '{}': {}", path.display(), e))?;
+
+    let datetime: DateTime<Local> = DateTime::from(last_modified);
+    let last_modified_str = datetime.format("%d-%m-%Y %H:%M:%S").to_string();
+
+    let current_dir = path.parent().ok_or_else(|| format!("Path '{}' has no parent", path.display()))?;
+    let relative_path = path.strip_prefix(current_dir).map_err(|e| format!("Failed to strip prefix from path '{}': {}", path.display(), e))?;
+    let filename_os = path.file_name().ok_or_else(|| format!("No filename for path {:?}", path))?;
+    let filename = filename_os.to_string_lossy();
+
+
+    Ok(format!(
+        "<tr><td><a href=\"{}\">{}</a></td><td>{}</td><td>{}</td></tr>",
+        percent_encode_path(relative_path),
+        filename,
+        file_size_human,
+        last_modified_str
+    ))
+}
+
+
+// Helper function to percent-encode path segments for URLs - important for directory listing links
+fn percent_encode_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None, // Skip RootDir, ParentDir, CurDir, Prefix components
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+        .replace(" ", "%20") // Basic space encoding, consider more robust URL encoding if needed
+}
+
+
+fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("[{:?}] send_response - Status: {}, Body Length: {}", thread::current().id(), status_code, body.len());
     let image_map = [
         (400, "error_400.dat"),
         (403, "error_403.dat"),
@@ -392,8 +589,8 @@ fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, bo
     ];
 
     let (content_type, response_body) =
-        if let Some(image_name) = image_map.iter().find(|(code, _)| *code == status_code) {
-            match Assets::get(image_name.1) {
+        if let Some((_, image_name)) = image_map.iter().find(|(code, _)| *code == status_code) {
+            match Assets::get(image_name) {
                 Some(embedded_file) => ("image/png", embedded_file.data.into_owned()),
                 None => (
                     "text/plain",
@@ -407,17 +604,14 @@ fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, bo
         };
 
     let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         status_code,
         status_text,
         content_type,
         response_body.len()
     );
 
-    stream.write_all(response.as_bytes()).unwrap_or_else(|e| {
-        eprintln!("Error writing response: {}", e);
-    });
-    stream.write_all(&response_body).unwrap_or_else(|e| {
-        eprintln!("Error writing response body: {}", e);
-    });
+    stream.write_all(response.as_bytes()).map_err(|e| format!("Failed to write response header: {}", e))?;
+    stream.write_all(&response_body).map_err(|e| format!("Failed to write response body: {}", e))?;
+    Ok(())
 }
