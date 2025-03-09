@@ -15,6 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::str::FromStr;
 use std::time::UNIX_EPOCH;
 use threadpool::ThreadPool;
 
@@ -104,25 +105,30 @@ fn handle_client(
     file_directory: &Arc<Mutex<String>>,
     download_extensions: &Arc<Vec<Pattern>>,
 ) {
-    let buf_reader = BufReader::new(&mut stream);
+    let mut buffer = [0; 1024];
+    let mut request_line = String::new();
+    let mut headers = Vec::new();
 
-    let request_line = match buf_reader.lines().next() {
-        Some(Ok(line)) => line,
-        Some(Err(e)) => {
-            eprintln!("Error reading request line: {}", e);
-            send_response(
-                &mut stream,
-                400,
-                "Bad Request",
-                "Error reading request line",
-            );
-            return;
+    // Read the request line
+    let bytes_read = stream.read(&mut buffer).unwrap();
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let mut lines = request.lines();
+
+    if let Some(line) = lines.next() {
+        request_line = line.to_string();
+    } else {
+        send_response(&mut stream, 400, "Bad Request", "Empty request");
+        return;
+    }
+
+    // Read the headers
+    for line in lines {
+        if line.is_empty() {
+            break;
         }
-        None => {
-            send_response(&mut stream, 400, "Bad Request", "Empty request");
-            return;
-        }
-    };
+        println!("{}", line);
+        headers.push(line.to_string());
+    }
 
     let requested_path = request_line.split_whitespace().nth(1);
 
@@ -161,21 +167,49 @@ fn handle_client(
         if let Ok(mut file) = File::open(&path) {
             let file_size = file.metadata().unwrap().len();
             let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {file_size}\r\n\r\n").as_bytes()).unwrap();
 
-            const BUFFER_SIZE: usize = 1024 * 1024;
-            let mut buffer = [0; BUFFER_SIZE];
-            loop {
-                let bytes_read = file.read(&mut buffer).unwrap();
-                if bytes_read == 0 {
-                    break;
-                }
-                // Send the buffer to the client and check for any errors
-                if (stream.write_all(&buffer[..bytes_read])).is_err() {
-                    println!("Error writing to stream for file: {}, Thread ID: {:?}", filename, std::thread::current().id());
+            let mut range_header = String::new();
+            for header in headers {
+                if header.starts_with("Range: bytes=") {
+                    range_header = header.trim_start_matches("Range: bytes=").to_string();
                     break;
                 }
             }
+
+            let mut start_byte = 0;
+            let mut end_byte = file_size - 1;
+
+            if !range_header.is_empty() {
+                let range_parts: Vec<&str> = range_header.split('-').collect();
+                if range_parts.len() == 2 {
+                    if let Ok(start) = u64::from_str(range_parts[0]) {
+                        start_byte = start;
+                    }
+                    if let Ok(end) = u64::from_str(range_parts[1]) {
+                        end_byte = end;
+                    }
+                }
+            }
+
+            let content_length = end_byte - start_byte + 1;
+
+            if start_byte >= file_size {
+                send_response(&mut stream, 416, "Requested Range Not Satisfiable", "Range not satisfiable");
+                return;
+            }
+
+            file.seek(SeekFrom::Start(start_byte)).unwrap();
+
+            let mut buffer = vec![0; content_length as usize];
+            file.read_exact(&mut buffer).unwrap();
+
+            let response = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {content_length}\r\n\r\n",
+                start_byte, end_byte, file_size
+            );
+
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&buffer).unwrap();
         } else {
             send_response(&mut stream, 404, "Not Found", "File not found");
         }
