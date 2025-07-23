@@ -1,0 +1,50 @@
+/// # Simple Download Server
+///
+/// A lightweight, configurable file download server written in Rust.
+///
+/// This library contains the core logic for the server. The `run` function
+/// initializes and starts the server based on command-line arguments.
+pub mod cli;
+pub mod response;
+pub mod server;
+pub mod error;
+pub mod http;
+pub mod fs;
+pub mod utils;
+
+use log::{error};
+use crate::cli::Cli;
+use clap::Parser;
+
+/// Initializes the logger, parses command-line arguments, and starts the server.
+///
+/// This is the main entry point for the application. It sets up the logging
+/// framework and then calls the `run_server` function to start the server.
+/// If the server returns an error, it is logged and the process exits.
+pub fn run() {
+    let cli = Cli::parse();
+
+    let log_level = if cli.verbose {
+        "debug"
+    } else if cli.detailed_logging {
+        "info"
+    } else {
+        "warn"
+    };
+
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", log_level);
+    }
+    env_logger::init();
+
+    log::debug!("Log level set to: {}", log_level);
+
+    if let Err(e) = server::run_server(cli) {
+        error!("Server error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+
+#[cfg(test)]
+mod tests;
