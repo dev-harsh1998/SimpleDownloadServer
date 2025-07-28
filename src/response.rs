@@ -29,26 +29,26 @@ pub fn send_response(
         (404, "error_404.dat"),
     ];
 
-    let (content_type, response_body) =
-        if let Some((_, image_name)) = image_map.iter().find(|(code, _)| *code == status_code) {
-            match Assets::get(image_name) {
-                Some(embedded_file) => ("image/png", embedded_file.data.into_owned()),
-                None => {
-                    warn!(
-                        "{} Embedded image '{}' for status code {} not found. Serving default text error.",
-                        log_prefix, image_name, status_code
+    let (content_type, response_body) = if let Some((_, image_name)) =
+        image_map.iter().find(|(code, _)| *code == status_code)
+    {
+        match Assets::get(image_name) {
+            Some(embedded_file) => ("image/png", embedded_file.data.into_owned()),
+            None => {
+                warn!(
+                        "{log_prefix} Embedded image '{image_name}' for status code {status_code} not found. Serving default text error."
                     );
-                    (
-                        "text/plain",
-                        format!("Error {}: {}. Image not found.", status_code, status_text)
-                            .as_bytes()
-                            .to_vec(),
-                    )
-                }
+                (
+                    "text/plain",
+                    format!("Error {status_code}: {status_text}. Image not found.")
+                        .as_bytes()
+                        .to_vec(),
+                )
             }
-        } else {
-            ("text/html; charset=utf-8", body.as_bytes().to_vec())
-        };
+        }
+    } else {
+        ("text/html; charset=utf-8", body.as_bytes().to_vec())
+    };
 
     let mut response = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
@@ -66,8 +66,7 @@ pub fn send_response(
 
     stream.write_all(response.as_bytes()).map_err(|e| {
         error!(
-            "{} Failed to write response header (Status: {}, Content-Type: {}): {}",
-            log_prefix, status_code, content_type, e
+            "{log_prefix} Failed to write response header (Status: {status_code}, Content-Type: {content_type}): {e}"
         );
         AppError::Io(e)
     })?;

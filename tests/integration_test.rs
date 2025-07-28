@@ -1,6 +1,5 @@
 use hdl_sv::cli::Cli;
 use hdl_sv::server::run_server;
-use reqwest;
 use std::fs::File;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -39,7 +38,7 @@ fn setup_test_server(username: Option<String>, password: Option<String>) -> Test
 
     let server_handle = thread::spawn(move || {
         if let Err(e) = run_server(cli, Some(shutdown_rx), Some(addr_tx)) {
-            eprintln!("Server thread failed: {}", e);
+            eprintln!("Server thread failed: {e}");
         }
     });
 
@@ -142,5 +141,3 @@ fn test_authentication() {
         .unwrap();
     assert_eq!(res.status(), 401);
 }
-
-

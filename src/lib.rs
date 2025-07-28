@@ -5,16 +5,16 @@
 /// This library contains the core logic for the server. The `run` function
 /// initializes and starts the server based on command-line arguments.
 pub mod cli;
+pub mod error;
+pub mod fs;
+pub mod http;
 pub mod response;
 pub mod server;
-pub mod error;
-pub mod http;
-pub mod fs;
 pub mod utils;
 
-use log::{error};
 use crate::cli::Cli;
 use clap::Parser;
+use log::error;
 
 /// Initializes the logger, parses command-line arguments, and starts the server.
 ///
@@ -37,12 +37,10 @@ pub fn run() {
     }
     env_logger::init();
 
-    log::debug!("Log level set to: {}", log_level);
+    log::debug!("Log level set to: {log_level}");
 
     if let Err(e) = server::run_server(cli, None, None) {
-        error!("Server error: {}", e);
+        error!("Server error: {e}");
         std::process::exit(1);
     }
 }
-
-

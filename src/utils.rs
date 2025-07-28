@@ -26,8 +26,8 @@ pub fn get_request_path(request_line: &str) -> &str {
                 // Extract the path part.
                 let path = &path_with_http_version[..path_end_index];
                 // Handle paths that start with "/".
-                if path.starts_with("/") {
-                    let relative_path = &path[1..]; // Remove the leading "/".
+                if let Some(relative_path) = path.strip_prefix("/") {
+                    // Remove the leading "/".
                     if relative_path.is_empty() {
                         // If it's just "/", return root path.
                         return "/";
@@ -43,8 +43,8 @@ pub fn get_request_path(request_line: &str) -> &str {
                 // If there's no second space (unusual HTTP request but handle it).
                 let path = path_with_http_version; // Take the rest as path.
                                                    // Handle paths starting with "/".
-                if path.starts_with("/") {
-                    let relative_path = &path[1..]; // Remove leading "/".
+                if let Some(relative_path) = path.strip_prefix("/") {
+                    // Remove leading "/".
                     if relative_path.is_empty() {
                         // If it's just "/", return root path.
                         return "/";

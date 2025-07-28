@@ -17,16 +17,16 @@ pub enum AppError {
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AppError::Io(err) => write!(f, "IO error: {}", err),
-            AppError::Glob(err) => write!(f, "Glob pattern error: {}", err),
-            AppError::AddrParse(err) => write!(f, "Address parse error: {}", err),
+            AppError::Io(err) => write!(f, "IO error: {err}"),
+            AppError::Glob(err) => write!(f, "Glob pattern error: {err}"),
+            AppError::AddrParse(err) => write!(f, "Address parse error: {err}"),
             AppError::InvalidPath => write!(f, "Invalid path"),
-            AppError::DirectoryNotFound(path) => write!(f, "Directory not found: {}", path),
+            AppError::DirectoryNotFound(path) => write!(f, "Directory not found: {path}"),
             AppError::Forbidden => write!(f, "Forbidden"),
             AppError::NotFound => write!(f, "Not Found"),
             AppError::BadRequest => write!(f, "Bad Request"),
             AppError::Unauthorized => write!(f, "Unauthorized"),
-            AppError::InternalServerError(msg) => write!(f, "Internal server error: {}", msg),
+            AppError::InternalServerError(msg) => write!(f, "Internal server error: {msg}"),
         }
     }
 }

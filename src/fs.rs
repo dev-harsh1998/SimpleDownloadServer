@@ -10,22 +10,26 @@ use std::time::SystemTime;
 
 /// Checks if the given path is a directory.
 pub fn is_directory(file_directory: &Arc<Mutex<PathBuf>>) -> Result<bool, AppError> {
-    let dir_guard = file_directory.lock().map_err(|_| {
-        AppError::InternalServerError("Failed to lock directory mutex".to_string())
-    })?;
+    let dir_guard = file_directory
+        .lock()
+        .map_err(|_| AppError::InternalServerError("Failed to lock directory mutex".to_string()))?;
     Ok(Path::new(&*dir_guard).is_dir())
 }
 
 /// Generates an HTML directory listing for a given path.
 pub fn generate_directory_listing(path: &Path, log_prefix: &str) -> Result<String, AppError> {
-    debug!("{} Generating directory listing for: '{}'", log_prefix, path.display());
+    debug!(
+        "{} Generating directory listing for: '{}'",
+        log_prefix,
+        path.display()
+    );
 
     let mut entries: Vec<PathBuf> = Vec::new();
     for entry_result in fs::read_dir(path)? {
         match entry_result {
             Ok(entry) => entries.push(entry.path()),
             Err(e) => {
-                warn!("{} Skipping directory entry due to error: {}", log_prefix, e);
+                warn!("{log_prefix} Skipping directory entry due to error: {e}");
             }
         }
     }
@@ -124,16 +128,19 @@ pub fn generate_directory_listing(path: &Path, log_prefix: &str) -> Result<Strin
                          </tr>
                      </thead>
                      <tbody>
-                         {}
+                         {table_rows_html}
                      </tbody>
                  </table>
              </div>
          </body>
          </html>
-         "#,
-        table_rows_html
+         "#
     );
-    debug!("{} Directory listing HTML generated for: '{}'", log_prefix, path.display());
+    debug!(
+        "{} Directory listing HTML generated for: '{}'",
+        log_prefix,
+        path.display()
+    );
     Ok(html)
 }
 
@@ -150,7 +157,6 @@ pub fn generate_directory_row_html(path: &Path, _log_prefix: &str) -> Result<Str
     let relative_path = percent_encode_path(Path::new(&filename.to_string()));
 
     Ok(format!(
-        "<tr><td><a href=\"{}\">{}</a></td><td>{}</td><td>{}</td></tr>",
-        relative_path, filename, file_size_human, last_modified_str
+        "<tr><td><a href=\"{relative_path}\">{filename}</a></td><td>{file_size_human}</td><td>{last_modified_str}</td></tr>"
     ))
 }

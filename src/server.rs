@@ -6,7 +6,6 @@ use glob::Pattern;
 use log::{debug, error, info};
 use rand::Rng;
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use threadpool::ThreadPool;
@@ -16,9 +15,7 @@ pub fn run_server(
     shutdown_rx: Option<mpsc::Receiver<()>>,
     addr_tx: Option<mpsc::Sender<SocketAddr>>,
 ) -> Result<(), AppError> {
-    let file_directory = Arc::new(Mutex::new(
-        PathBuf::from(cli.directory.clone()).canonicalize()?,
-    ));
+    let file_directory = Arc::new(Mutex::new(cli.directory.clone().canonicalize()?));
 
     if !is_directory(&file_directory)? {
         return Err(AppError::DirectoryNotFound(
@@ -80,10 +77,10 @@ pub fn run_server(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
                 let request_id = generate_request_id();
-                let log_prefix = format!("[ReqID: {}][Peer: {}]", request_id, peer_addr);
+                let log_prefix = format!("[ReqID: {request_id}][Peer: {peer_addr}]");
 
                 pool.execute(move || {
-                    debug!("{} Handling client connection", log_prefix);
+                    debug!("{log_prefix} Handling client connection");
                     handle_client(
                         stream,
                         &file_directory_arc,
@@ -94,7 +91,7 @@ pub fn run_server(
                         &username_clone,
                         &password_clone,
                     );
-                    debug!("{} Client handled successfully", log_prefix);
+                    debug!("{log_prefix} Client handled successfully");
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -102,7 +99,7 @@ pub fn run_server(
                 continue;
             }
             Err(e) => {
-                error!("Error accepting connection: {}", e);
+                error!("Error accepting connection: {e}");
             }
         }
     }
@@ -118,4 +115,3 @@ fn generate_request_id() -> String {
         .map(char::from)
         .collect()
 }
-

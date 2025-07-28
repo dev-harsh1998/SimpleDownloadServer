@@ -1,9 +1,9 @@
-use base64::engine::general_purpose;
-use base64::Engine;
 use crate::error::AppError;
 use crate::fs::generate_directory_listing;
 use crate::response::send_response;
 use crate::utils::get_request_path;
+use base64::engine::general_purpose;
+use base64::Engine;
 use glob::Pattern;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_client(
     mut stream: TcpStream,
     file_directory: &Arc<Mutex<PathBuf>>,
@@ -41,6 +42,7 @@ pub fn handle_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_request(
     stream: &mut TcpStream,
     file_directory: &Arc<Mutex<PathBuf>>,
@@ -64,7 +66,7 @@ fn handle_request(
         }
     };
 
-    debug!("{} Request line: {}", log_prefix, request_line);
+    debug!("{log_prefix} Request line: {request_line}");
 
     let mut headers_map = HashMap::new();
     for line in lines_iter {
@@ -77,14 +79,20 @@ fn handle_request(
         }
     }
 
-    if let (Some(username), Some(password)) = (username.as_ref().as_ref(), password.as_ref().as_ref()) {
+    if let (Some(username), Some(password)) =
+        (username.as_ref().as_ref(), password.as_ref().as_ref())
+    {
         if !authenticate(&headers_map, username, password)? {
             return Err(AppError::Unauthorized);
         }
     }
 
     let request_path_str = get_request_path(&request_line);
-    let request_path = PathBuf::from(request_path_str.strip_prefix('/').unwrap_or(request_path_str));
+    let request_path = PathBuf::from(
+        request_path_str
+            .strip_prefix('/')
+            .unwrap_or(request_path_str),
+    );
 
     let full_path = file_directory.lock().unwrap().join(&request_path);
     let canonical_path = match full_path.canonicalize() {
@@ -108,13 +116,7 @@ fn handle_request(
         .iter()
         .any(|pattern| pattern.matches_path(&request_path))
     {
-        serve_file(
-            stream,
-            &canonical_path,
-            headers_map,
-            chunk_size,
-            log_prefix,
-        )?;
+        serve_file(stream, &canonical_path, headers_map, chunk_size, log_prefix)?;
     } else {
         warn!(
             "{} File extension not allowed for path: '{}'",
@@ -130,8 +132,16 @@ fn handle_request(
 fn send_error_response(stream: &mut TcpStream, err: AppError, log_prefix: &str) {
     let (status_code, status_text, body) = match err {
         AppError::NotFound => (404, "Not Found", "The requested resource was not found."),
-        AppError::Forbidden => (403, "Forbidden", "You do not have permission to access this resource."),
-        AppError::BadRequest => (400, "Bad Request", "The server could not understand the request."),
+        AppError::Forbidden => (
+            403,
+            "Forbidden",
+            "You do not have permission to access this resource.",
+        ),
+        AppError::BadRequest => (
+            400,
+            "Bad Request",
+            "The server could not understand the request.",
+        ),
         AppError::Unauthorized => (401, "Unauthorized", "Authentication required."),
         AppError::InternalServerError(ref msg) => (500, "Internal Server Error", msg.as_str()),
         AppError::Io(ref e)
@@ -139,16 +149,17 @@ fn send_error_response(stream: &mut TcpStream, err: AppError, log_prefix: &str) 
                 || e.kind() == ErrorKind::BrokenPipe
                 || e.kind() == ErrorKind::WouldBlock =>
         {
-            warn!(
-                "{} Connection error when sending response: {}",
-                log_prefix, e
-            );
+            warn!("{log_prefix} Connection error when sending response: {e}");
             return;
         }
-        _ => (500, "Internal Server Error", "An unexpected error occurred."),
+        _ => (
+            500,
+            "Internal Server Error",
+            "An unexpected error occurred.",
+        ),
     };
 
-    error!("{} Responding with error {}: {}", log_prefix, status_code, status_text);
+    error!("{log_prefix} Responding with error {status_code}: {status_text}");
 
     let mut headers = HashMap::new();
     if status_code == 401 {
@@ -156,7 +167,7 @@ fn send_error_response(stream: &mut TcpStream, err: AppError, log_prefix: &str) 
     }
 
     if let Err(e) = send_response(stream, status_code, status_text, body, log_prefix) {
-        error!("{} Failed to send error response: {}", log_prefix, e);
+        error!("{log_prefix} Failed to send error response: {e}");
     }
 }
 
@@ -195,7 +206,11 @@ fn serve_file(
     chunk_size: usize,
     log_prefix: &str,
 ) -> Result<(), AppError> {
-    info!("{} serve_file started for: '{}'", log_prefix, path.display());
+    info!(
+        "{} serve_file started for: '{}'",
+        log_prefix,
+        path.display()
+    );
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == ErrorKind::NotFound => return Err(AppError::NotFound),
@@ -220,13 +235,11 @@ fn serve_file(
 
     let content_length = end_byte - start_byte + 1;
     let mut response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Disposition: attachment; filename=\"{}\"\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n",
-        status_code, status_text, filename, content_length
+        "HTTP/1.1 {status_code} {status_text}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {content_length}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
     );
     if status_code == 206 {
         response.push_str(&format!(
-            "Content-Range: bytes {}-{}/{}\r\n",
-            start_byte, end_byte, file_size
+            "Content-Range: bytes {start_byte}-{end_byte}/{file_size}\r\n"
         ));
     }
     response.push_str("\r\n");
@@ -246,20 +259,28 @@ fn serve_file(
         bytes_remaining -= bytes_read as u64;
     }
 
-    info!("{} serve_file finished for: '{}'", log_prefix, path.display());
+    info!(
+        "{} serve_file finished for: '{}'",
+        log_prefix,
+        path.display()
+    );
     Ok(())
 }
 
 /// Serves a directory listing as an HTML page.
-fn serve_directory(
-    stream: &mut TcpStream,
-    path: &Path,
-    log_prefix: &str,
-) -> Result<(), AppError> {
-    info!("{} serve_directory started for: '{}'", log_prefix, path.display());
+fn serve_directory(stream: &mut TcpStream, path: &Path, log_prefix: &str) -> Result<(), AppError> {
+    info!(
+        "{} serve_directory started for: '{}'",
+        log_prefix,
+        path.display()
+    );
     let html = generate_directory_listing(path, log_prefix)?;
     send_response(stream, 200, "OK", &html, log_prefix)?;
-    info!("{} serve_directory finished for: '{}'", log_prefix, path.display());
+    info!(
+        "{} serve_directory finished for: '{}'",
+        log_prefix,
+        path.display()
+    );
     Ok(())
 }
 
