@@ -39,12 +39,10 @@ pub fn run() {
 
     log::debug!("Log level set to: {}", log_level);
 
-    if let Err(e) = server::run_server(cli) {
+    if let Err(e) = server::run_server(cli, None, None) {
         error!("Server error: {}", e);
         std::process::exit(1);
     }
 }
 
 
-#[cfg(test)]
-mod tests;

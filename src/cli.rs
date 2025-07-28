@@ -43,4 +43,12 @@ pub struct Cli {
     /// Enable more detailed logging (log level: info if verbose=false, debug if verbose=true) -  More logs than usual, but not *too* much. Good for general monitoring. ℹ️
     #[arg(long, default_value_t = false)]
     pub detailed_logging: bool,
+
+    /// Username for basic authentication.
+    #[arg(long)]
+    pub username: Option<String>,
+
+    /// Password for basic authentication.
+    #[arg(long)]
+    pub password: Option<String>,
 }

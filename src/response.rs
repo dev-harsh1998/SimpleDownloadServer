@@ -8,10 +8,6 @@ use std::net::TcpStream;
 #[folder = "assets"]
 struct Assets;
 
-/// Sends a response to the client.
-///
-/// This function handles sending various types of responses, including HTML,
-/// images for error pages, and plain text fallbacks.
 pub fn send_response(
     stream: &mut TcpStream,
     status_code: u16,
@@ -54,13 +50,19 @@ pub fn send_response(
             ("text/html; charset=utf-8", body.as_bytes().to_vec())
         };
 
-    let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+    let mut response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
         status_code,
         status_text,
         content_type,
         response_body.len()
     );
+
+    if status_code == 401 {
+        response.push_str("WWW-Authenticate: Basic realm=\"Restricted\"\r\n");
+    }
+
+    response.push_str("\r\n");
 
     stream.write_all(response.as_bytes()).map_err(|e| {
         error!(

@@ -10,6 +10,7 @@ pub enum AppError {
     Forbidden,
     NotFound,
     BadRequest,
+    Unauthorized,
     InternalServerError(String),
 }
 
@@ -24,6 +25,7 @@ impl fmt::Display for AppError {
             AppError::Forbidden => write!(f, "Forbidden"),
             AppError::NotFound => write!(f, "Not Found"),
             AppError::BadRequest => write!(f, "Bad Request"),
+            AppError::Unauthorized => write!(f, "Unauthorized"),
             AppError::InternalServerError(msg) => write!(f, "Internal server error: {}", msg),
         }
     }
