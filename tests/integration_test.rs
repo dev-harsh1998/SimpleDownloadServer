@@ -1,7 +1,7 @@
 use hdl_sv::cli::Cli;
 use hdl_sv::server::run_server;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -124,20 +124,93 @@ fn test_empty_request() {
 #[test]
 fn test_authentication() {
     let server = setup_test_server(Some("testuser".to_string()), Some("testpass".to_string()));
-    let client = reqwest::blocking::Client::new();
 
     // 1. Test without credentials
-    let res = client
-        .get(format!("http://{}/", server.addr))
-        .send()
-        .unwrap();
-    assert_eq!(res.status(), 401);
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+    let request = "GET / HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    assert!(status_line.starts_with("HTTP/1.1 401 Unauthorized"));
 
     // 2. Test with wrong credentials
-    let res = client
-        .get(format!("http://{}/", server.addr))
-        .basic_auth("wronguser", Some("wrongpass"))
-        .send()
-        .unwrap();
-    assert_eq!(res.status(), 401);
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+    let request = "GET / HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Authorization: Basic d3Jvbmd1c2VyOndyb25ncGFzcw==\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    assert!(status_line.starts_with("HTTP/1.1 401 Unauthorized"));
+
+    // 3. Test with correct credentials
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+    let request = "GET / HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Authorization: Basic dGVzdHVzZXI6dGVzdHBhc3M=\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    assert!(status_line.starts_with("HTTP/1.1 200 OK"));
 }
+
+#[test]
+fn test_authenticated_file_access() {
+    let server = setup_test_server(Some("testuser".to_string()), Some("testpass".to_string()));
+
+    // Access with correct credentials
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+    let request = "GET /test.txt HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Authorization: Basic dGVzdHVzZXI6dGVzdHBhc3M=\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    assert!(status_line.starts_with("HTTP/1.1 200 OK"));
+
+    // Access without credentials
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+    let request = "GET /test.txt HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    assert!(status_line.starts_with("HTTP/1.1 401 Unauthorized"));
+}
+
+#[test]
+fn test_manual_request() {
+    let server = setup_test_server(Some("testuser".to_string()), Some("testpass".to_string()));
+    let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
+
+    // Raw HTTP request with basic auth
+    let request = "GET / HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Authorization: Basic dGVzdHVzZXI6dGVzdHBhc3M=\r\n\
+                   Connection: close\r\n\
+                   \r\n";
+    stream.write_all(request.as_bytes()).unwrap();
+
+    let mut reader = std::io::BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+
+    assert!(status_line.starts_with("HTTP/1.1 200 OK"));
+}
+

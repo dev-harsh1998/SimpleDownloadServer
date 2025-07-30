@@ -5,7 +5,7 @@ use crate::utils::get_request_path;
 use base64::engine::general_purpose;
 use base64::Engine;
 use glob::Pattern;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{prelude::*, BufReader, ErrorKind, Read, Seek, SeekFrom};
@@ -66,8 +66,6 @@ fn handle_request(
         }
     };
 
-    debug!("{log_prefix} Request line: {request_line}");
-
     let mut headers_map = HashMap::new();
     for line in lines_iter {
         let line = line?;
@@ -78,7 +76,6 @@ fn handle_request(
             headers_map.insert(key.to_string(), value.to_string());
         }
     }
-
     if let (Some(username), Some(password)) =
         (username.as_ref().as_ref(), password.as_ref().as_ref())
     {
