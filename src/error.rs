@@ -11,6 +11,7 @@ pub enum AppError {
     NotFound,
     BadRequest,
     Unauthorized,
+    MethodNotAllowed,
     InternalServerError(String),
 }
 
@@ -24,8 +25,9 @@ impl fmt::Display for AppError {
             AppError::DirectoryNotFound(path) => write!(f, "Directory not found: {path}"),
             AppError::Forbidden => write!(f, "Forbidden"),
             AppError::NotFound => write!(f, "Not Found"),
-            AppError::BadRequest => write!(f, "Bad Request"),
+            AppError::BadRequest => write!(f, "Bad request"),
             AppError::Unauthorized => write!(f, "Unauthorized"),
+            AppError::MethodNotAllowed => write!(f, "Method not allowed"),
             AppError::InternalServerError(msg) => write!(f, "Internal server error: {msg}"),
         }
     }

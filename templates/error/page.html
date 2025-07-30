@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error {{STATUS_CODE}}</title>
+    <link rel="stylesheet" href="/_static/error/styles.css">
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-code">{{STATUS_CODE}}</div>
+        <div class="error-message">{{STATUS_TEXT}}</div>
+        <div class="error-description">
+            {{DESCRIPTION}}
+        </div>
+        <div class="server-info">hdl_sv/2.0.0</div>
+        <a href="/" class="back-link">
+            <span>←</span>
+            <span>Back to Files</span>
+        </a>
+    </div>
+
+    <script src="/_static/error/script.js"></script>
+</body>
+</html>

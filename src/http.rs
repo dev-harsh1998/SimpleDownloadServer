@@ -1,299 +1,509 @@
-use crate::error::AppError;
-use crate::fs::generate_directory_listing;
-use crate::response::send_response;
-use crate::utils::get_request_path;
-use base64::engine::general_purpose;
-use base64::Engine;
-use glob::Pattern;
-use log::{error, info, warn};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{prelude::*, BufReader, ErrorKind, Read, Seek, SeekFrom};
-use std::net::TcpStream;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+//! Handles HTTP request parsing, routing, and response generation.
 
-#[allow(clippy::too_many_arguments)]
-pub fn handle_client(
-    mut stream: TcpStream,
-    file_directory: &Arc<Mutex<PathBuf>>,
-    download_extensions: &Arc<Vec<Pattern>>,
-    chunk_size: usize,
-    log_prefix: &str,
-    base_dir: &Arc<PathBuf>,
-    username: &Arc<Option<String>>,
-    password: &Arc<Option<String>>,
-) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    if let Err(e) = handle_request(
-        &mut stream,
-        file_directory,
-        download_extensions,
-        chunk_size,
-        log_prefix,
-        base_dir,
-        username,
-        password,
-    ) {
-        send_error_response(&mut stream, e, log_prefix);
+use crate::error::AppError;
+use crate::fs::{generate_directory_listing, FileDetails};
+use crate::response::{get_mime_type, create_error_response};
+use base64::Engine;
+use log::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::io::prelude::*;
+use std::net::TcpStream;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
+/// Represents a parsed incoming HTTP request.
+#[derive(Debug)]
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub headers: HashMap<String, String>,
+}
+
+/// Represents an outgoing HTTP response.
+pub struct Response {
+    pub status_code: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    pub body: ResponseBody,
+}
+
+pub enum ResponseBody {
+    Text(String),
+    Stream(FileDetails),
+}
+
+impl Request {
+    /// Enhanced HTTP request parser with better performance and compliance
+    pub fn from_stream(stream: &mut TcpStream) -> Result<Self, AppError> {
+        // Set a reasonable timeout for reading requests
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        
+        // Read the entire HTTP headers in chunks for better performance
+        let headers_data = Self::read_headers(stream)?;
+        
+        // Parse the headers
+        let mut lines = headers_data.lines();
+        
+        // Parse request line
+        let request_line = lines.next().ok_or(AppError::BadRequest)?;
+        let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+        
+        if parts.len() != 3 {
+            return Err(AppError::BadRequest);
+        }
+        
+        let method = parts[0].to_string();
+        let path = Self::decode_url(parts[1])?;
+        let version = parts[2];
+        
+        // Validate HTTP version
+        if !version.starts_with("HTTP/1.") {
+            return Err(AppError::BadRequest);
+        }
+        
+        // Parse headers
+        let mut headers = HashMap::new();
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() {
+                break;
+            }
+            
+            if let Some((key, value)) = line.split_once(':') {
+                let key = key.trim().to_lowercase();
+                let value = value.trim().to_string();
+                
+                // Handle multiple header values (comma-separated)
+                if let Some(existing) = headers.get(&key) {
+                    headers.insert(key, format!("{}, {}", existing, value));
+                } else {
+                    headers.insert(key, value);
+                }
+            }
+        }
+
+        debug!("Parsed request: {} {} (headers: {})", method, path, headers.len());
+        Ok(Request {
+            method,
+            path,
+            headers,
+        })
+    }
+
+    /// Read HTTP headers efficiently in chunks
+    fn read_headers(stream: &mut TcpStream) -> Result<String, AppError> {
+        let mut buffer = vec![0; 8192]; // 8KB buffer for headers
+        let mut headers_data = String::new();
+        let mut total_read = 0;
+        
+        loop {
+            match stream.read(&mut buffer[total_read..]) {
+                Ok(0) => {
+                    if total_read == 0 {
+                        return Err(AppError::BadRequest);
+                    }
+                    break;
+                }
+                Ok(bytes_read) => {
+                    total_read += bytes_read;
+                    
+                    // Convert bytes to string (up to what we've read)
+                    match std::str::from_utf8(&buffer[0..total_read]) {
+                        Ok(data) => {
+                            // Look for the end of headers (\r\n\r\n or \n\n)
+                            if data.contains("\r\n\r\n") {
+                                let end_pos = data.find("\r\n\r\n").unwrap() + 4;
+                                headers_data = data[0..end_pos - 4].to_string();
+                                break;
+                            } else if data.contains("\n\n") {
+                                let end_pos = data.find("\n\n").unwrap() + 2;
+                                headers_data = data[0..end_pos - 2].to_string();
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            // Invalid UTF-8, continue reading
+                        }
+                    }
+                    
+                    // Prevent header buffer overflow attacks
+                    if total_read >= buffer.len() {
+                        return Err(AppError::BadRequest);
+                    }
+                }
+                Err(e) => return Err(AppError::Io(e)),
+            }
+        }
+        
+        Ok(headers_data)
+    }
+    
+    /// Simple URL decoding for percent-encoded paths
+    fn decode_url(path: &str) -> Result<String, AppError> {
+        let mut decoded = String::with_capacity(path.len());
+        let mut chars = path.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '%' {
+                // Try to decode percent-encoded character
+                let hex1 = chars.next().ok_or(AppError::BadRequest)?;
+                let hex2 = chars.next().ok_or(AppError::BadRequest)?;
+                
+                if let Ok(byte_val) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16) {
+                    if let Some(decoded_char) = char::from_u32(byte_val as u32) {
+                        decoded.push(decoded_char);
+                    } else {
+                        // Invalid character, keep as-is
+                        decoded.push(ch);
+                        decoded.push(hex1);
+                        decoded.push(hex2);
+                    }
+                } else {
+                    // Invalid hex, keep as-is
+                    decoded.push(ch);
+                    decoded.push(hex1);
+                    decoded.push(hex2);
+                }
+            } else {
+                decoded.push(ch);
+            }
+        }
+        
+        Ok(decoded)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_request(
-    stream: &mut TcpStream,
-    file_directory: &Arc<Mutex<PathBuf>>,
-    download_extensions: &Arc<Vec<Pattern>>,
-    chunk_size: usize,
-    log_prefix: &str,
+/// Top-level function to handle a client connection.
+pub fn handle_client(
+    mut stream: TcpStream,
     base_dir: &Arc<PathBuf>,
+    allowed_extensions: &Arc<Vec<glob::Pattern>>,
     username: &Arc<Option<String>>,
     password: &Arc<Option<String>>,
-) -> Result<(), AppError> {
-    let reader = BufReader::new(&*stream);
-    let mut lines_iter = reader.lines();
+    chunk_size: usize,
+) {
+    let log_prefix = format!("[{}]", stream.peer_addr().unwrap());
 
-    let request_line = match lines_iter.next() {
-        Some(Ok(line)) => line,
-        Some(Err(e)) => {
-            return Err(AppError::Io(e));
-        }
-        None => {
-            return Err(AppError::BadRequest);
+    let request = match Request::from_stream(&mut stream) {
+        Ok(req) => req,
+        Err(e) => {
+            warn!("{} Failed to parse request: {}", log_prefix, e);
+            send_error_response(&mut stream, e, &log_prefix);
+            return;
         }
     };
 
-    let mut headers_map = HashMap::new();
-    for line in lines_iter {
-        let line = line?;
-        if line.is_empty() {
-            break;
+    let response_result = route_request(
+        &request,
+        base_dir,
+        allowed_extensions,
+        username,
+        password,
+        chunk_size,
+    );
+
+    match response_result {
+        Ok(response) => {
+            if let Err(e) = send_response(&mut stream, response, &log_prefix) {
+                error!("{} Failed to send response: {}", log_prefix, e);
+            }
         }
-        if let Some((key, value)) = line.split_once(": ") {
-            headers_map.insert(key.to_string(), value.to_string());
+        Err(e) => {
+            warn!("{} Error processing request: {}", log_prefix, e);
+            send_error_response(&mut stream, e, &log_prefix);
         }
     }
-    if let (Some(username), Some(password)) =
-        (username.as_ref().as_ref(), password.as_ref().as_ref())
-    {
-        if !authenticate(&headers_map, username, password)? {
+}
+
+/// A safe, manual path normalization function.
+fn normalize_path(path: &Path) -> Result<PathBuf, AppError> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => {
+                components.push(name);
+            }
+            Component::ParentDir => {
+                if components.pop().is_none() {
+                    return Err(AppError::Forbidden);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(components.iter().collect())
+}
+
+/// Handle static asset requests for CSS/JS files
+fn handle_static_asset(path: &str) -> Result<Response, AppError> {
+    use std::fs;
+    
+    // Map /_static/ URLs to templates/ directory
+    let asset_path = path.strip_prefix("/_static/").unwrap_or("");
+    let file_path = format!("templates/{}", asset_path);
+    
+    // Security check - ensure path is within templates directory
+    let canonical_path = std::path::Path::new(&file_path)
+        .canonicalize()
+        .map_err(|_| AppError::NotFound)?;
+    
+    let templates_dir = std::path::Path::new("templates")
+        .canonicalize()
+        .map_err(|_| AppError::InternalServerError("Templates directory not found".to_string()))?;
+    
+    if !canonical_path.starts_with(&templates_dir) {
+        return Err(AppError::Forbidden);
+    }
+    
+    // Read and serve the file
+    let content = fs::read(&canonical_path).map_err(|_| AppError::NotFound)?;
+    
+    // Determine content type
+    let content_type = match canonical_path.extension().and_then(|ext| ext.to_str()) {
+        Some("css") => "text/css",
+        Some("js") => "application/javascript",
+        _ => "text/plain",
+    };
+    
+    Ok(Response {
+        status_code: 200,
+        status_text: "OK".to_string(),
+        headers: {
+            let mut map = HashMap::new();
+            map.insert("Content-Type".to_string(), content_type.to_string());
+            map.insert("Cache-Control".to_string(), "public, max-age=3600".to_string());
+            map
+        },
+        body: ResponseBody::Text(String::from_utf8_lossy(&content).to_string()),
+    })
+}
+
+/// Create a health check response with server status
+fn create_health_check_response() -> Response {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    
+    let health_info = format!(
+        r#"{{
+    "status": "healthy",
+    "service": "hdl_sv",
+    "version": "2.0.0",
+    "timestamp": {},
+    "features": [
+        "rate_limiting",
+        "statistics", 
+        "native_mime_detection",
+        "enhanced_security",
+        "beautiful_ui",
+        "http11_compliance",
+        "request_timeouts",
+        "panic_recovery"
+    ]
+}}"#,
+        timestamp
+    );
+    
+    Response {
+        status_code: 200,
+        status_text: "OK".to_string(),
+        headers: {
+            let mut map = HashMap::new();
+            map.insert("Content-Type".to_string(), "application/json; charset=utf-8".to_string());
+            map.insert("Cache-Control".to_string(), "no-cache".to_string());
+            map
+        },
+        body: ResponseBody::Text(health_info),
+    }
+}
+
+/// Determines the correct response based on the request.
+fn route_request(
+    request: &Request,
+    base_dir: &Arc<PathBuf>,
+    allowed_extensions: &Arc<Vec<glob::Pattern>>,
+    username: &Arc<Option<String>>,
+    password: &Arc<Option<String>>,
+    chunk_size: usize,
+) -> Result<Response, AppError> {
+    if let (Some(expected_user), Some(expected_pass)) = (username.as_ref(), password.as_ref()) {
+        if !is_authenticated(request.headers.get("authorization"), expected_user, expected_pass) {
             return Err(AppError::Unauthorized);
         }
     }
 
-    let request_path_str = get_request_path(&request_line);
-    let request_path = PathBuf::from(
-        request_path_str
-            .strip_prefix('/')
-            .unwrap_or(request_path_str),
-    );
+    // Handle health check endpoint
+    if request.path == "/_health" || request.path == "/_status" {
+        return Ok(create_health_check_response());
+    }
+    
+    // Handle static assets for templates
+    if request.path.starts_with("/_static/") {
+        return handle_static_asset(&request.path);
+    }
+    
+    if request.method != "GET" {
+        return Err(AppError::MethodNotAllowed);
+    }
 
-    let full_path = file_directory.lock().unwrap().join(&request_path);
-    let canonical_path = match full_path.canonicalize() {
-        Ok(path) => path,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Err(AppError::NotFound),
-        Err(e) => return Err(AppError::Io(e)),
-    };
+    let requested_path = PathBuf::from(request.path.strip_prefix('/').unwrap_or(&request.path));
+    let safe_path = normalize_path(&requested_path)?;
+    let full_path = base_dir.join(safe_path);
 
-    if !canonical_path.starts_with(base_dir.as_ref()) {
-        warn!(
-            "{} Potential path traversal attempt: '{}'",
-            log_prefix,
-            request_path.display()
-        );
+    if !full_path.starts_with(base_dir.as_ref()) {
         return Err(AppError::Forbidden);
     }
 
-    if canonical_path.is_dir() {
-        serve_directory(stream, &canonical_path, log_prefix)?;
-    } else if download_extensions
-        .iter()
-        .any(|pattern| pattern.matches_path(&request_path))
-    {
-        serve_file(stream, &canonical_path, headers_map, chunk_size, log_prefix)?;
-    } else {
-        warn!(
-            "{} File extension not allowed for path: '{}'",
-            log_prefix,
-            request_path.display()
-        );
-        return Err(AppError::Forbidden);
+    if !full_path.exists() {
+        return Err(AppError::NotFound);
     }
 
-    Ok(())
-}
-
-fn send_error_response(stream: &mut TcpStream, err: AppError, log_prefix: &str) {
-    let (status_code, status_text, body) = match err {
-        AppError::NotFound => (404, "Not Found", "The requested resource was not found."),
-        AppError::Forbidden => (
-            403,
-            "Forbidden",
-            "You do not have permission to access this resource.",
-        ),
-        AppError::BadRequest => (
-            400,
-            "Bad Request",
-            "The server could not understand the request.",
-        ),
-        AppError::Unauthorized => (401, "Unauthorized", "Authentication required."),
-        AppError::InternalServerError(ref msg) => (500, "Internal Server Error", msg.as_str()),
-        AppError::Io(ref e)
-            if e.kind() == ErrorKind::ConnectionReset
-                || e.kind() == ErrorKind::BrokenPipe
-                || e.kind() == ErrorKind::WouldBlock =>
+    if full_path.is_dir() {
+        let html_content = generate_directory_listing(&full_path, &request.path)?;
+        Ok(Response {
+            status_code: 200,
+            status_text: "OK".to_string(),
+            headers: {
+                let mut map = HashMap::new();
+                map.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
+                map
+            },
+            body: ResponseBody::Text(html_content),
+        })
+    } else if full_path.is_file() {
+        if !allowed_extensions
+            .iter()
+            .any(|p| p.matches_path(&full_path))
         {
-            warn!("{log_prefix} Connection error when sending response: {e}");
-            return;
+            return Err(AppError::Forbidden);
         }
-        _ => (
-            500,
-            "Internal Server Error",
-            "An unexpected error occurred.",
-        ),
-    };
 
-    error!("{log_prefix} Responding with error {status_code}: {status_text}");
-
-    let mut headers = HashMap::new();
-    if status_code == 401 {
-        headers.insert("WWW-Authenticate", "Basic realm=\"Restricted\"");
-    }
-
-    if let Err(e) = send_response(stream, status_code, status_text, body, log_prefix) {
-        error!("{log_prefix} Failed to send error response: {e}");
+        let file_details = FileDetails::new(full_path.clone(), chunk_size)?;
+        let mime_type = get_mime_type(&full_path);
+        Ok(Response {
+            status_code: 200,
+            status_text: "OK".to_string(),
+            headers: {
+                let mut map = HashMap::new();
+                map.insert("Content-Type".to_string(), mime_type.to_string());
+                map.insert("Content-Length".to_string(), file_details.size.to_string());
+                map.insert("Accept-Ranges".to_string(), "bytes".to_string());
+                map.insert("Cache-Control".to_string(), "public, max-age=3600".to_string());
+                map
+            },
+            body: ResponseBody::Stream(file_details),
+        })
+    } else {
+        Err(AppError::NotFound)
     }
 }
 
-fn authenticate(
-    headers: &HashMap<String, String>,
-    username: &str,
-    password: &str,
-) -> Result<bool, AppError> {
-    if let Some(auth_header) = headers.get("Authorization") {
-        if let Some(credentials) = auth_header.strip_prefix("Basic ") {
-            let decoded = match general_purpose::STANDARD.decode(credentials) {
-                Ok(decoded) => decoded,
-                Err(_) => return Ok(false),
-            };
-            let decoded_str = match String::from_utf8(decoded) {
-                Ok(s) => s,
-                Err(_) => return Ok(false),
-            };
-            let mut parts = decoded_str.splitn(2, ':');
-            let provided_user = parts.next();
-            let provided_pass = parts.next();
+/// Checks the 'Authorization' header for valid credentials.
+fn is_authenticated(auth_header: Option<&String>, user: &str, pass: &str) -> bool {
+    let header = match auth_header {
+        Some(h) => h,
+        None => return false,
+    };
 
-            if let (Some(user), Some(pass)) = (provided_user, provided_pass) {
-                return Ok(user == username && pass == password);
+    let credentials = match header.strip_prefix("Basic ") {
+        Some(c) => c,
+        None => return false,
+    };
+
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(credentials) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    let decoded_str = match String::from_utf8(decoded) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    if let Some((provided_user, provided_pass)) = decoded_str.split_once(':') {
+        provided_user == user && provided_pass == pass
+    } else {
+        false
+    }
+}
+
+/// Sends a fully formed `Response` to the client with enhanced headers.
+fn send_response(
+    stream: &mut TcpStream,
+    response: Response,
+    log_prefix: &str,
+) -> Result<(), std::io::Error> {
+    info!(
+        "{} {} {}",
+        log_prefix, response.status_code, response.status_text
+    );
+    
+    let mut response_str = format!(
+        "HTTP/1.1 {} {}\r\n",
+        response.status_code, response.status_text
+    );
+    
+    // Add standard server headers first
+    response_str.push_str("Server: hdl_sv/2.0.0\r\n");
+    response_str.push_str("Connection: close\r\n");
+    
+    // Add response-specific headers
+    for (key, value) in response.headers {
+        response_str.push_str(&format!("{}: {}\r\n", key, value));
+    }
+    
+    // Calculate and add content length for text responses
+    let body_bytes = match &response.body {
+        ResponseBody::Text(text) => {
+            let bytes = text.as_bytes();
+            response_str.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
+            bytes.to_vec()
+        }
+        ResponseBody::Stream(file_details) => {
+            response_str.push_str(&format!("Content-Length: {}\r\n", file_details.size));
+            Vec::new() // Will be handled separately
+        }
+    };
+    
+    response_str.push_str("\r\n");
+
+    stream.write_all(response_str.as_bytes())?;
+
+    // Send body
+    match response.body {
+        ResponseBody::Text(_) => {
+            stream.write_all(&body_bytes)?;
+        }
+        ResponseBody::Stream(mut file_details) => {
+            let mut buffer = vec![0; file_details.chunk_size];
+            while let Ok(bytes_read) = file_details.file.read(&mut buffer) {
+                if bytes_read == 0 {
+                    break;
+                }
+                stream.write_all(&buffer[..bytes_read])?;
             }
         }
     }
-    Ok(false)
+
+    stream.flush()
 }
 
-/// Serves a file to the client.
-fn serve_file(
-    stream: &mut TcpStream,
-    path: &Path,
-    headers: HashMap<String, String>,
-    chunk_size: usize,
-    log_prefix: &str,
-) -> Result<(), AppError> {
-    info!(
-        "{} serve_file started for: '{}'",
-        log_prefix,
-        path.display()
-    );
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Err(AppError::NotFound),
-        Err(e) => return Err(AppError::Io(e)),
+/// Sends a pre-canned error response using the new response system.
+fn send_error_response(stream: &mut TcpStream, error: AppError, log_prefix: &str) {
+    let (status_code, status_text) = match error {
+        AppError::NotFound => (404, "Not Found"),
+        AppError::Forbidden => (403, "Forbidden"),
+        AppError::BadRequest => (400, "Bad Request"),
+        AppError::Unauthorized => (401, "Unauthorized"),
+        AppError::MethodNotAllowed => (405, "Method Not Allowed"),
+        _ => (500, "Internal Server Error"),
     };
 
-    let file_size = file.metadata()?.len();
-    let filename = path.file_name().unwrap().to_string_lossy();
-
-    let (mut start_byte, mut end_byte) = (0, file_size - 1);
-    let (status_code, status_text) = if let Some(range_header) = headers.get("Range") {
-        if let Some(range) = parse_range_header(range_header, file_size) {
-            start_byte = range.0;
-            end_byte = range.1;
-            (206, "Partial Content")
-        } else {
-            return Err(AppError::BadRequest);
-        }
-    } else {
-        (200, "OK")
-    };
-
-    let content_length = end_byte - start_byte + 1;
-    let mut response = format!(
-        "HTTP/1.1 {status_code} {status_text}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {content_length}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
-    );
-    if status_code == 206 {
-        response.push_str(&format!(
-            "Content-Range: bytes {start_byte}-{end_byte}/{file_size}\r\n"
-        ));
-    }
-    response.push_str("\r\n");
-
-    stream.write_all(response.as_bytes())?;
-    file.seek(SeekFrom::Start(start_byte))?;
-
-    let mut bytes_remaining = content_length;
-    let mut buffer = vec![0; chunk_size];
-    while bytes_remaining > 0 {
-        let to_read = std::cmp::min(bytes_remaining as usize, chunk_size);
-        let bytes_read = file.read(&mut buffer[..to_read])?;
-        if bytes_read == 0 {
-            break;
-        }
-        stream.write_all(&buffer[..bytes_read])?;
-        bytes_remaining -= bytes_read as u64;
-    }
-
-    info!(
-        "{} serve_file finished for: '{}'",
-        log_prefix,
-        path.display()
-    );
-    Ok(())
-}
-
-/// Serves a directory listing as an HTML page.
-fn serve_directory(stream: &mut TcpStream, path: &Path, log_prefix: &str) -> Result<(), AppError> {
-    info!(
-        "{} serve_directory started for: '{}'",
-        log_prefix,
-        path.display()
-    );
-    let html = generate_directory_listing(path, log_prefix)?;
-    send_response(stream, 200, "OK", &html, log_prefix)?;
-    info!(
-        "{} serve_directory finished for: '{}'",
-        log_prefix,
-        path.display()
-    );
-    Ok(())
-}
-
-fn parse_range_header(header: &str, file_size: u64) -> Option<(u64, u64)> {
-    let header = header.strip_prefix("bytes=")?;
-    let mut parts = header.split('-');
-    let start = parts.next()?.parse::<u64>().ok()?;
-    let end = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(file_size - 1);
-
-    if start > end || end >= file_size {
-        None
-    } else {
-        Some((start, end))
+    info!("{} {} {}", log_prefix, status_code, status_text);
+    
+    let response = create_error_response(status_code, status_text);
+    if let Err(e) = response.send(stream, log_prefix) {
+        error!("{} Failed to send error response: {}", log_prefix, e);
     }
 }

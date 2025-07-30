@@ -10,6 +10,7 @@ pub mod fs;
 pub mod http;
 pub mod response;
 pub mod server;
+pub mod templates;
 pub mod utils;
 
 use crate::cli::Cli;

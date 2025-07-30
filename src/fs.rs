@@ -1,162 +1,162 @@
 use crate::error::AppError;
-use crate::utils::percent_encode_path;
-use chrono::{DateTime, Local};
-use humansize::{format_size, BINARY};
-use log::{debug, warn};
-use std::fs;
+use crate::templates::TemplateEngine;
+use log::debug;
+use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// Checks if the given path is a directory.
-pub fn is_directory(file_directory: &Arc<Mutex<PathBuf>>) -> Result<bool, AppError> {
-    let dir_guard = file_directory
-        .lock()
-        .map_err(|_| AppError::InternalServerError("Failed to lock directory mutex".to_string()))?;
-    Ok(Path::new(&*dir_guard).is_dir())
+/// Enhanced directory listing using modular templates - dark mode only
+pub fn generate_directory_listing(path: &Path, request_path: &str) -> Result<String, AppError> {
+    debug!("Generating directory listing for: '{}'", path.display());
+    
+    let mut entries = Vec::new();
+    
+    // Collect and sort entries
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        let file_name = entry.file_name().into_string().unwrap_or_default();
+        
+        entries.push((entry.path(), file_name, metadata));
+    }
+    
+    // Sort: directories first, then alphabetically
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.2.is_dir();
+        let b_is_dir = b.2.is_dir();
+        
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
+        }
+    });
+    
+    let display_path = if request_path.is_empty() || request_path == "/" {
+        "/"
+    } else {
+        request_path
+    };
+    
+    // Prepare entries data for template
+    let mut template_entries = Vec::new();
+    
+    for (_entry_path, file_name, metadata) in entries {
+        let is_dir = metadata.is_dir();
+        let link_name = if is_dir {
+            format!("{}/", file_name)
+        } else {
+            file_name.clone()
+        };
+        
+        let size = if is_dir {
+            "-".to_string()
+        } else {
+            format_file_size(metadata.len())
+        };
+        
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|duration| {
+                let timestamp = duration.as_secs();
+                format_timestamp(timestamp)
+            })
+            .unwrap_or_else(|| "-".to_string());
+        
+        template_entries.push((link_name, size, modified));
+    }
+    
+    // Create template engine and load templates
+    let mut engine = TemplateEngine::new();
+    engine.load_all_templates()?;
+    
+    // Render using template
+    engine.render_directory_listing(display_path, &template_entries, template_entries.len())
 }
 
-/// Generates an HTML directory listing for a given path.
-pub fn generate_directory_listing(path: &Path, log_prefix: &str) -> Result<String, AppError> {
-    debug!(
-        "{} Generating directory listing for: '{}'",
-        log_prefix,
-        path.display()
-    );
-
-    let mut entries: Vec<PathBuf> = Vec::new();
-    for entry_result in fs::read_dir(path)? {
-        match entry_result {
-            Ok(entry) => entries.push(entry.path()),
-            Err(e) => {
-                warn!("{log_prefix} Skipping directory entry due to error: {e}");
-            }
-        }
+/// Format file size in human-readable format
+fn format_file_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    const THRESHOLD: u64 = 1024;
+    
+    if size == 0 {
+        return "0 B".to_string();
     }
-    entries.sort();
-
-    let mut table_rows_html = String::new();
-    for path in entries {
-        match generate_directory_row_html(&path, log_prefix) {
-            Ok(row_html) => table_rows_html.push_str(&row_html),
-            Err(e) => {
-                warn!(
-                    "{} Could not generate table row for path '{}': {}",
-                    log_prefix,
-                    path.display(),
-                    e
-                );
-            }
-        }
+    
+    let mut size_f = size as f64;
+    let mut unit_index = 0;
+    
+    while size_f >= THRESHOLD as f64 && unit_index < UNITS.len() - 1 {
+        size_f /= THRESHOLD as f64;
+        unit_index += 1;
     }
-
-    let html = format!(
-        r#"
-         <!DOCTYPE html>
-         <html lang="en">
-         <head>
-             <meta charset="UTF-8">
-             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-             <title>SimpleDownloadServer</title>
-             <link
-                 href="https://stackpath.bootstrapcdn.com/bootstrap/5.3.0/css/bootstrap.min.css"
-                 rel="stylesheet"
-             >
-             <style>
-                 body {{
-                     font-family: 'Inter', sans-serif;
-                     background-color: #1a1a1a;
-                     color: #FFFFFF;
-                     margin: 0;
-                     padding: 20px;
-                 }}
-                 .container {{
-                     max-width: 960px;
-                     margin: 0 auto;
-                     padding: 30px;
-                     background-color: #424242;
-                     border-radius: 10px;
-                     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.7);
-                     transition: box-shadow 0.3s ease-in-out;
-                 }}
-                 .container:hover {{
-                   box-shadow:
-                     0px 8px 20px rgba(150, 150, 150, 0.2),
-                     0px -8px 20px rgba(150, 150, 150, 0.2),
-                     8px 0px 20px rgba(150, 150, 150, 0.2),
-                     -8px 0px 20px rgba(150, 150, 150, 0.2);
-                 }}
-                 h1 {{
-                     color: #FF9800;
-                     margin-bottom: 30px;
-                 }}
-                 table {{
-                     width: 100%;
-                     border-collapse: collapse;
-                 }}
-                 th, td {{
-                     padding: 10px;
-                     text-align: left;
-                     border-bottom: 1px solid #555555;
-                 }}
-                 th {{
-                     background-color: #616161;
-                 }}
-                 tr:hover {{
-                     background-color: #757575;
-                 }}
-                 a {{
-                      color: white;
-                      text-decoration: none;
-                 }}
-                 a:hover {{
-                     color: #838fe9;
-                     transition: 0.2s;
-                     text-decoration: none;
-                 }}
-             </style>
-         </head>
-         <body>
-             <div class="container">
-                 <h1>Directory Listing</h1>
-                 <table class="table table-hover">
-                     <thead>
-                         <tr>
-                             <th>Name</th>
-                             <th>Size</th>
-                             <th>Last Modified</th>
-                         </tr>
-                     </thead>
-                     <tbody>
-                         {table_rows_html}
-                     </tbody>
-                 </table>
-             </div>
-         </body>
-         </html>
-         "#
-    );
-    debug!(
-        "{} Directory listing HTML generated for: '{}'",
-        log_prefix,
-        path.display()
-    );
-    Ok(html)
+    
+    if unit_index == 0 {
+        format!("{} {}", size, UNITS[unit_index])
+    } else {
+        format!("{:.1} {}", size_f, UNITS[unit_index])
+    }
 }
 
-/// Generates a single table row for a directory entry.
-pub fn generate_directory_row_html(path: &Path, _log_prefix: &str) -> Result<String, AppError> {
-    let metadata = fs::metadata(path)?;
-    let file_size_human = format_size(metadata.len(), BINARY);
+/// Format Unix timestamp to human-readable date
+fn format_timestamp(timestamp: u64) -> String {
+    // Simple date formatting without external dependencies
+    let seconds_per_minute = 60;
+    let seconds_per_hour = 3600;
+    let seconds_per_day = 86400;
+    
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    let age = now.saturating_sub(timestamp);
+    
+    if age < seconds_per_minute {
+        "Just now".to_string()
+    } else if age < seconds_per_hour {
+        let minutes = age / seconds_per_minute;
+        format!("{} min ago", minutes)
+    } else if age < seconds_per_day {
+        let hours = age / seconds_per_hour;
+        format!("{} hr ago", hours)
+    } else if age < seconds_per_day * 30 {
+        let days = age / seconds_per_day;
+        format!("{} days ago", days)
+    } else {
+        // Rough date calculation for older files
+        let days_since_epoch = timestamp / seconds_per_day;
+        let year = 1970 + days_since_epoch / 365;
+        let day_of_year = days_since_epoch % 365;
+        let month = (day_of_year / 30) + 1;
+        let day = (day_of_year % 30) + 1;
+        format!("{:04}-{:02}-{:02}", year, month.min(12), day.min(31))
+    }
+}
 
-    let last_modified: SystemTime = metadata.modified()?;
-    let datetime: DateTime<Local> = DateTime::from(last_modified);
-    let last_modified_str = datetime.format("%d-%m-%Y %H:%M:%S").to_string();
 
-    let filename = path.file_name().unwrap().to_string_lossy();
-    let relative_path = percent_encode_path(Path::new(&filename.to_string()));
 
-    Ok(format!(
-        "<tr><td><a href=\"{relative_path}\">{filename}</a></td><td>{file_size_human}</td><td>{last_modified_str}</td></tr>"
-    ))
+/// Holds details about a file to be streamed.
+pub struct FileDetails {
+    pub path: PathBuf,
+    pub file: File,
+    pub size: u64,
+    pub chunk_size: usize,
+}
+
+impl FileDetails {
+    pub fn new(path: PathBuf, chunk_size: usize) -> Result<Self, io::Error> {
+        let file = File::open(&path)?;
+        let metadata = file.metadata()?;
+        let size = metadata.len();
+        Ok(FileDetails {
+            path,
+            file,
+            size,
+            chunk_size,
+        })
+    }
 }
