@@ -10,6 +10,12 @@ pub struct TemplateEngine {
     templates: HashMap<String, String>,
 }
 
+impl Default for TemplateEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TemplateEngine {
     /// Create a new template engine
     pub fn new() -> Self {
@@ -21,7 +27,7 @@ impl TemplateEngine {
     /// Load template from file system
     pub fn load_template(&mut self, name: &str, path: &str) -> Result<(), AppError> {
         let content = fs::read_to_string(path).map_err(|e| {
-            AppError::InternalServerError(format!("Failed to load template {}: {}", name, e))
+            AppError::InternalServerError(format!("Failed to load template {name}: {e}"))
         })?;
         self.templates.insert(name.to_string(), content);
         Ok(())
@@ -43,15 +49,20 @@ impl TemplateEngine {
     }
 
     /// Render a template with variables
-    pub fn render(&self, template_name: &str, variables: &HashMap<String, String>) -> Result<String, AppError> {
-        let template = self.templates.get(template_name)
-            .ok_or_else(|| AppError::InternalServerError(format!("Template '{}' not found", template_name)))?;
+    pub fn render(
+        &self,
+        template_name: &str,
+        variables: &HashMap<String, String>,
+    ) -> Result<String, AppError> {
+        let template = self.templates.get(template_name).ok_or_else(|| {
+            AppError::InternalServerError(format!("Template '{template_name}' not found"))
+        })?;
 
         let mut rendered = template.clone();
-        
+
         // Replace variables in the format {{VARIABLE_NAME}}
         for (key, value) in variables {
-            let placeholder = format!("{{{{{}}}}}", key);
+            let placeholder = format!("{{{{{key}}}}}");
             rendered = rendered.replace(&placeholder, value);
         }
 
@@ -71,7 +82,7 @@ impl TemplateEngine {
 
         // Generate entries HTML
         let mut entries_html = String::new();
-        
+
         // Add parent directory link if not at root
         if path != "/" && !path.is_empty() {
             entries_html.push_str(
@@ -84,7 +95,7 @@ impl TemplateEngine {
                     </td>
                     <td class="size">-</td>
                     <td class="date">-</td>
-                </tr>"#
+                </tr>"#,
             );
         }
 
@@ -118,7 +129,7 @@ impl TemplateEngine {
         }
 
         variables.insert("ENTRIES".to_string(), entries_html);
-        
+
         self.render("directory_index", &variables)
     }
 
@@ -133,7 +144,7 @@ impl TemplateEngine {
         variables.insert("STATUS_CODE".to_string(), status_code.to_string());
         variables.insert("STATUS_TEXT".to_string(), status_text.to_string());
         variables.insert("DESCRIPTION".to_string(), description.to_string());
-        
+
         self.render("error_page", &variables)
     }
 }
@@ -174,6 +185,6 @@ pub fn get_error_description(status_code: u16) -> &'static str {
         404 => "The requested file or directory could not be found.",
         405 => "The request method is not allowed for this resource.",
         500 => "An internal server error occurred while processing your request.",
-        _ => "An unexpected error occurred while processing your request."
+        _ => "An unexpected error occurred while processing your request.",
     }
 }

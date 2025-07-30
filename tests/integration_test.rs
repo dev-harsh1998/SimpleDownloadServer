@@ -83,13 +83,19 @@ fn test_unauthenticated_access() {
     let client = Client::new();
 
     // 1. Test directory listing
-    let res = client.get(format!("http://{}/", server.addr)).send().unwrap();
+    let res = client
+        .get(format!("http://{}/", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.text().unwrap();
     assert!(body.contains("test.txt"));
 
     // 2. Test allowed file download
-    let res = client.get(format!("http://{}/test.txt", server.addr)).send().unwrap();
+    let res = client
+        .get(format!("http://{}/test.txt", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.text().unwrap(), "hello from test file\n");
 }
@@ -100,7 +106,10 @@ fn test_authentication_required() {
     let client = Client::new();
 
     // 1. Test without credentials -> 401 Unauthorized
-    let res = client.get(format!("http://{}/", server.addr)).send().unwrap();
+    let res = client
+        .get(format!("http://{}/", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     assert!(res.headers().contains_key("www-authenticate"));
 
@@ -144,15 +153,24 @@ fn test_error_responses() {
     let client = Client::new();
 
     // 1. Test Not Found
-    let res = client.get(format!("http://{}/nonexistent.txt", server.addr)).send().unwrap();
+    let res = client
+        .get(format!("http://{}/nonexistent.txt", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
     // 2. Test Forbidden file type
-    let res = client.get(format!("http://{}/test.zip", server.addr)).send().unwrap();
+    let res = client
+        .get(format!("http://{}/test.zip", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
     // 3. Test Method Not Allowed
-    let res = client.post(format!("http://{}/", server.addr)).send().unwrap();
+    let res = client
+        .post(format!("http://{}/", server.addr))
+        .send()
+        .unwrap();
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
@@ -187,12 +205,12 @@ fn test_path_traversal_prevention() {
 #[test]
 fn test_malformed_request() {
     let server = setup_test_server(None, None);
-    
+
     // Send a request that is syntactically incorrect.
     let request = "GET /not-a-valid-http-version\r\n\r\n";
     let mut stream = std::net::TcpStream::connect(server.addr).unwrap();
     stream.write_all(request.as_bytes()).unwrap();
-    
+
     let mut reader = std::io::BufReader::new(stream);
     let mut status_line = String::new();
     reader.read_line(&mut status_line).unwrap();

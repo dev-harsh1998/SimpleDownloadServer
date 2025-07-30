@@ -2,7 +2,7 @@
 
 use crate::error::AppError;
 use crate::fs::{generate_directory_listing, FileDetails};
-use crate::response::{get_mime_type, create_error_response};
+use crate::response::{create_error_response, get_mime_type};
 use base64::Engine;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -37,30 +37,30 @@ impl Request {
     pub fn from_stream(stream: &mut TcpStream) -> Result<Self, AppError> {
         // Set a reasonable timeout for reading requests
         stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
-        
+
         // Read the entire HTTP headers in chunks for better performance
         let headers_data = Self::read_headers(stream)?;
-        
+
         // Parse the headers
         let mut lines = headers_data.lines();
-        
+
         // Parse request line
         let request_line = lines.next().ok_or(AppError::BadRequest)?;
-        let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
-        
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
+
         if parts.len() != 3 {
             return Err(AppError::BadRequest);
         }
-        
+
         let method = parts[0].to_string();
         let path = Self::decode_url(parts[1])?;
         let version = parts[2];
-        
+
         // Validate HTTP version
         if !version.starts_with("HTTP/1.") {
             return Err(AppError::BadRequest);
         }
-        
+
         // Parse headers
         let mut headers = HashMap::new();
         for line in lines {
@@ -68,21 +68,26 @@ impl Request {
             if line.is_empty() {
                 break;
             }
-            
+
             if let Some((key, value)) = line.split_once(':') {
                 let key = key.trim().to_lowercase();
                 let value = value.trim().to_string();
-                
+
                 // Handle multiple header values (comma-separated)
                 if let Some(existing) = headers.get(&key) {
-                    headers.insert(key, format!("{}, {}", existing, value));
+                    headers.insert(key, format!("{existing}, {value}"));
                 } else {
                     headers.insert(key, value);
                 }
             }
         }
 
-        debug!("Parsed request: {} {} (headers: {})", method, path, headers.len());
+        debug!(
+            "Parsed request: {} {} (headers: {})",
+            method,
+            path,
+            headers.len()
+        );
         Ok(Request {
             method,
             path,
@@ -95,7 +100,7 @@ impl Request {
         let mut buffer = vec![0; 8192]; // 8KB buffer for headers
         let mut headers_data = String::new();
         let mut total_read = 0;
-        
+
         loop {
             match stream.read(&mut buffer[total_read..]) {
                 Ok(0) => {
@@ -106,7 +111,7 @@ impl Request {
                 }
                 Ok(bytes_read) => {
                     total_read += bytes_read;
-                    
+
                     // Convert bytes to string (up to what we've read)
                     match std::str::from_utf8(&buffer[0..total_read]) {
                         Ok(data) => {
@@ -125,7 +130,7 @@ impl Request {
                             // Invalid UTF-8, continue reading
                         }
                     }
-                    
+
                     // Prevent header buffer overflow attacks
                     if total_read >= buffer.len() {
                         return Err(AppError::BadRequest);
@@ -134,22 +139,22 @@ impl Request {
                 Err(e) => return Err(AppError::Io(e)),
             }
         }
-        
+
         Ok(headers_data)
     }
-    
+
     /// Simple URL decoding for percent-encoded paths
     fn decode_url(path: &str) -> Result<String, AppError> {
         let mut decoded = String::with_capacity(path.len());
         let mut chars = path.chars().peekable();
-        
+
         while let Some(ch) = chars.next() {
             if ch == '%' {
                 // Try to decode percent-encoded character
                 let hex1 = chars.next().ok_or(AppError::BadRequest)?;
                 let hex2 = chars.next().ok_or(AppError::BadRequest)?;
-                
-                if let Ok(byte_val) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16) {
+
+                if let Ok(byte_val) = u8::from_str_radix(&format!("{hex1}{hex2}"), 16) {
                     if let Some(decoded_char) = char::from_u32(byte_val as u32) {
                         decoded.push(decoded_char);
                     } else {
@@ -168,7 +173,7 @@ impl Request {
                 decoded.push(ch);
             }
         }
-        
+
         Ok(decoded)
     }
 }
@@ -187,7 +192,7 @@ pub fn handle_client(
     let request = match Request::from_stream(&mut stream) {
         Ok(req) => req,
         Err(e) => {
-            warn!("{} Failed to parse request: {}", log_prefix, e);
+            warn!("{log_prefix} Failed to parse request: {e}");
             send_error_response(&mut stream, e, &log_prefix);
             return;
         }
@@ -205,11 +210,11 @@ pub fn handle_client(
     match response_result {
         Ok(response) => {
             if let Err(e) = send_response(&mut stream, response, &log_prefix) {
-                error!("{} Failed to send response: {}", log_prefix, e);
+                error!("{log_prefix} Failed to send response: {e}");
             }
         }
         Err(e) => {
-            warn!("{} Error processing request: {}", log_prefix, e);
+            warn!("{log_prefix} Error processing request: {e}");
             send_error_response(&mut stream, e, &log_prefix);
         }
     }
@@ -237,41 +242,44 @@ fn normalize_path(path: &Path) -> Result<PathBuf, AppError> {
 /// Handle static asset requests for CSS/JS files
 fn handle_static_asset(path: &str) -> Result<Response, AppError> {
     use std::fs;
-    
+
     // Map /_static/ URLs to templates/ directory
     let asset_path = path.strip_prefix("/_static/").unwrap_or("");
-    let file_path = format!("templates/{}", asset_path);
-    
+    let file_path = format!("templates/{asset_path}");
+
     // Security check - ensure path is within templates directory
     let canonical_path = std::path::Path::new(&file_path)
         .canonicalize()
         .map_err(|_| AppError::NotFound)?;
-    
+
     let templates_dir = std::path::Path::new("templates")
         .canonicalize()
         .map_err(|_| AppError::InternalServerError("Templates directory not found".to_string()))?;
-    
+
     if !canonical_path.starts_with(&templates_dir) {
         return Err(AppError::Forbidden);
     }
-    
+
     // Read and serve the file
     let content = fs::read(&canonical_path).map_err(|_| AppError::NotFound)?;
-    
+
     // Determine content type
     let content_type = match canonical_path.extension().and_then(|ext| ext.to_str()) {
         Some("css") => "text/css",
         Some("js") => "application/javascript",
         _ => "text/plain",
     };
-    
+
     Ok(Response {
         status_code: 200,
         status_text: "OK".to_string(),
         headers: {
             let mut map = HashMap::new();
             map.insert("Content-Type".to_string(), content_type.to_string());
-            map.insert("Cache-Control".to_string(), "public, max-age=3600".to_string());
+            map.insert(
+                "Cache-Control".to_string(),
+                "public, max-age=3600".to_string(),
+            );
             map
         },
         body: ResponseBody::Text(String::from_utf8_lossy(&content).to_string()),
@@ -284,13 +292,13 @@ fn create_health_check_response() -> Response {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
+
     let health_info = format!(
         r#"{{
     "status": "healthy",
     "service": "hdl_sv",
     "version": "2.0.0",
-    "timestamp": {},
+    "timestamp": {timestamp},
     "features": [
         "rate_limiting",
         "statistics", 
@@ -301,16 +309,18 @@ fn create_health_check_response() -> Response {
         "request_timeouts",
         "panic_recovery"
     ]
-}}"#,
-        timestamp
+}}"#
     );
-    
+
     Response {
         status_code: 200,
         status_text: "OK".to_string(),
         headers: {
             let mut map = HashMap::new();
-            map.insert("Content-Type".to_string(), "application/json; charset=utf-8".to_string());
+            map.insert(
+                "Content-Type".to_string(),
+                "application/json; charset=utf-8".to_string(),
+            );
             map.insert("Cache-Control".to_string(), "no-cache".to_string());
             map
         },
@@ -328,7 +338,11 @@ fn route_request(
     chunk_size: usize,
 ) -> Result<Response, AppError> {
     if let (Some(expected_user), Some(expected_pass)) = (username.as_ref(), password.as_ref()) {
-        if !is_authenticated(request.headers.get("authorization"), expected_user, expected_pass) {
+        if !is_authenticated(
+            request.headers.get("authorization"),
+            expected_user,
+            expected_pass,
+        ) {
             return Err(AppError::Unauthorized);
         }
     }
@@ -337,12 +351,12 @@ fn route_request(
     if request.path == "/_health" || request.path == "/_status" {
         return Ok(create_health_check_response());
     }
-    
+
     // Handle static assets for templates
     if request.path.starts_with("/_static/") {
         return handle_static_asset(&request.path);
     }
-    
+
     if request.method != "GET" {
         return Err(AppError::MethodNotAllowed);
     }
@@ -366,7 +380,10 @@ fn route_request(
             status_text: "OK".to_string(),
             headers: {
                 let mut map = HashMap::new();
-                map.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
+                map.insert(
+                    "Content-Type".to_string(),
+                    "text/html; charset=utf-8".to_string(),
+                );
                 map
             },
             body: ResponseBody::Text(html_content),
@@ -389,7 +406,10 @@ fn route_request(
                 map.insert("Content-Type".to_string(), mime_type.to_string());
                 map.insert("Content-Length".to_string(), file_details.size.to_string());
                 map.insert("Accept-Ranges".to_string(), "bytes".to_string());
-                map.insert("Cache-Control".to_string(), "public, max-age=3600".to_string());
+                map.insert(
+                    "Cache-Control".to_string(),
+                    "public, max-age=3600".to_string(),
+                );
                 map
             },
             body: ResponseBody::Stream(file_details),
@@ -438,21 +458,21 @@ fn send_response(
         "{} {} {}",
         log_prefix, response.status_code, response.status_text
     );
-    
+
     let mut response_str = format!(
         "HTTP/1.1 {} {}\r\n",
         response.status_code, response.status_text
     );
-    
+
     // Add standard server headers first
     response_str.push_str("Server: hdl_sv/2.0.0\r\n");
     response_str.push_str("Connection: close\r\n");
-    
+
     // Add response-specific headers
     for (key, value) in response.headers {
-        response_str.push_str(&format!("{}: {}\r\n", key, value));
+        response_str.push_str(&format!("{key}: {value}\r\n"));
     }
-    
+
     // Calculate and add content length for text responses
     let body_bytes = match &response.body {
         ResponseBody::Text(text) => {
@@ -465,7 +485,7 @@ fn send_response(
             Vec::new() // Will be handled separately
         }
     };
-    
+
     response_str.push_str("\r\n");
 
     stream.write_all(response_str.as_bytes())?;
@@ -500,10 +520,10 @@ fn send_error_response(stream: &mut TcpStream, error: AppError, log_prefix: &str
         _ => (500, "Internal Server Error"),
     };
 
-    info!("{} {} {}", log_prefix, status_code, status_text);
-    
+    info!("{log_prefix} {status_code} {status_text}");
+
     let response = create_error_response(status_code, status_text);
     if let Err(e) = response.send(stream, log_prefix) {
-        error!("{} Failed to send error response: {}", log_prefix, e);
+        error!("{log_prefix} Failed to send error response: {e}");
     }
 }

@@ -22,21 +22,21 @@ impl TestServer {
     /// Sets up and runs a server in a background thread for testing.
     fn new(username: Option<String>, password: Option<String>) -> Self {
         let dir = tempdir().unwrap();
-        
+
         // Create test files
         let test_file = dir.path().join("test.txt");
         let mut file = File::create(&test_file).unwrap();
         writeln!(file, "Hello from test file!").unwrap();
-        
+
         let binary_file = dir.path().join("test.pdf");
         File::create(&binary_file).unwrap();
-        
+
         let large_file = dir.path().join("large.txt");
         let mut large = File::create(&large_file).unwrap();
         for i in 0..1000 {
             writeln!(large, "Line {} of a large file for testing", i).unwrap();
         }
-        
+
         // Create subdirectory
         let subdir = dir.path().join("subdir");
         fs::create_dir(&subdir).unwrap();
@@ -95,7 +95,10 @@ impl HttpClient {
     }
 
     fn get_with_auth(url: &str, username: &str, password: &str) -> HttpResponse {
-        let credentials = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{}:{}", username, password));
+        let credentials = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            format!("{}:{}", username, password),
+        );
         let auth_header = format!("Basic {}", credentials);
         Self::request("GET", url, Some(&auth_header), None)
     }
@@ -112,20 +115,22 @@ impl HttpClient {
         };
 
         let mut stream = TcpStream::connect(host_port).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
 
         let mut request = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host_port);
-        
+
         if let Some(auth_header) = auth {
             request.push_str(&format!("Authorization: {}\r\n", auth_header));
         }
-        
+
         if let Some(body_content) = body {
             request.push_str(&format!("Content-Length: {}\r\n", body_content.len()));
         }
-        
+
         request.push_str("\r\n");
-        
+
         if let Some(body_content) = body {
             request.push_str(body_content);
         }
@@ -184,16 +189,29 @@ fn test_enhanced_directory_listing() {
     let response = HttpClient::get(&url);
 
     assert_eq!(response.status_code, 200);
-    assert!(response.headers.get("content-type").unwrap().contains("text/html"));
+    assert!(response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("text/html"));
     assert!(response.body.contains("test.txt"));
     assert!(response.body.contains("subdir/"));
     assert!(response.body.contains("Name"));
-    
+
     // Check for modular template structure
-    assert!(response.body.contains("/_static/directory/styles.css"), "Should link to external CSS");
-    assert!(response.body.contains("/_static/directory/script.js"), "Should link to external JS");
-    assert!(response.body.contains("class=\"container\""), "Should use proper CSS classes");
-    
+    assert!(
+        response.body.contains("/_static/directory/styles.css"),
+        "Should link to external CSS"
+    );
+    assert!(
+        response.body.contains("/_static/directory/script.js"),
+        "Should link to external JS"
+    );
+    assert!(
+        response.body.contains("class=\"container\""),
+        "Should use proper CSS classes"
+    );
+
     // Ensure no emoji icons are present
     assert!(!response.body.contains("📁"));
     assert!(!response.body.contains("📄"));
@@ -206,16 +224,29 @@ fn test_beautiful_error_pages() {
     let response = HttpClient::get(&url);
 
     assert_eq!(response.status_code, 404);
-    assert!(response.headers.get("content-type").unwrap().contains("text/html"));
+    assert!(response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("text/html"));
     assert!(response.body.contains("404"));
     assert!(response.body.contains("Not Found"));
     assert!(response.body.contains("hdl_sv/2.0.0"));
-    
+
     // Check for modular error page template structure
-    assert!(response.body.contains("/_static/error/styles.css"), "Should link to external error CSS");
-    assert!(response.body.contains("/_static/error/script.js"), "Should link to external error JS");
-    assert!(response.body.contains("class=\"error-container\""), "Should use proper error CSS classes");
-    
+    assert!(
+        response.body.contains("/_static/error/styles.css"),
+        "Should link to external error CSS"
+    );
+    assert!(
+        response.body.contains("/_static/error/script.js"),
+        "Should link to external error JS"
+    );
+    assert!(
+        response.body.contains("class=\"error-container\""),
+        "Should use proper error CSS classes"
+    );
+
     // Check for modern interaction elements
     assert!(response.body.contains("back-link"));
     assert!(response.body.contains("Back to Files"));
@@ -224,36 +255,60 @@ fn test_beautiful_error_pages() {
 #[test]
 fn test_static_asset_serving() {
     let server = TestServer::new(None, None);
-    
+
     // Test CSS file serving
     let css_url = format!("http://{}/_static/directory/styles.css", server.addr);
     let css_response = HttpClient::get(&css_url);
-    
+
     assert_eq!(css_response.status_code, 200);
-    assert!(css_response.headers.get("content-type").unwrap().contains("text/css"));
-    assert!(css_response.body.contains("--bg-primary"), "Should contain CSS custom properties");
-    assert!(css_response.body.contains("backdrop-filter"), "Should contain modern CSS effects");
-    
+    assert!(css_response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("text/css"));
+    assert!(
+        css_response.body.contains("--bg-primary"),
+        "Should contain CSS custom properties"
+    );
+    assert!(
+        css_response.body.contains("backdrop-filter"),
+        "Should contain modern CSS effects"
+    );
+
     // Test JS file serving
     let js_url = format!("http://{}/_static/directory/script.js", server.addr);
     let js_response = HttpClient::get(&js_url);
-    
+
     assert_eq!(js_response.status_code, 200);
-    assert!(js_response.headers.get("content-type").unwrap().contains("application/javascript"));
-    assert!(js_response.body.contains("DOMContentLoaded"), "Should contain valid JavaScript");
-    
+    assert!(js_response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("application/javascript"));
+    assert!(
+        js_response.body.contains("DOMContentLoaded"),
+        "Should contain valid JavaScript"
+    );
+
     // Test error CSS serving
     let error_css_url = format!("http://{}/_static/error/styles.css", server.addr);
     let error_css_response = HttpClient::get(&error_css_url);
-    
+
     assert_eq!(error_css_response.status_code, 200);
-    assert!(error_css_response.headers.get("content-type").unwrap().contains("text/css"));
-    assert!(error_css_response.body.contains("error-container"), "Should contain error page styles");
-    
+    assert!(error_css_response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("text/css"));
+    assert!(
+        error_css_response.body.contains("error-container"),
+        "Should contain error page styles"
+    );
+
     // Test 404 for non-existent static asset
     let missing_url = format!("http://{}/_static/nonexistent.css", server.addr);
     let missing_response = HttpClient::get(&missing_url);
-    
+
     assert_eq!(missing_response.status_code, 404);
 }
 
@@ -264,7 +319,11 @@ fn test_health_check_endpoint() {
     let response = HttpClient::get(&url);
 
     assert_eq!(response.status_code, 200);
-    assert!(response.headers.get("content-type").unwrap().contains("application/json"));
+    assert!(response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("application/json"));
     assert!(response.body.contains("\"status\": \"healthy\""));
     assert!(response.body.contains("\"service\": \"hdl_sv\""));
     assert!(response.body.contains("rate_limiting"));
@@ -274,18 +333,26 @@ fn test_health_check_endpoint() {
 #[test]
 fn test_mime_type_detection() {
     let server = TestServer::new(None, None);
-    
+
     // Test text file
     let url = format!("http://{}/test.txt", server.addr);
     let response = HttpClient::get(&url);
     assert_eq!(response.status_code, 200);
-    assert!(response.headers.get("content-type").unwrap().contains("text/plain"));
-    
+    assert!(response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("text/plain"));
+
     // Test PDF file
     let url = format!("http://{}/test.pdf", server.addr);
     let response = HttpClient::get(&url);
     assert_eq!(response.status_code, 200);
-    assert!(response.headers.get("content-type").unwrap().contains("application/pdf"));
+    assert!(response
+        .headers
+        .get("content-type")
+        .unwrap()
+        .contains("application/pdf"));
 }
 
 #[test]
@@ -296,7 +363,11 @@ fn test_enhanced_security_headers() {
 
     assert_eq!(response.status_code, 200);
     assert!(response.headers.contains_key("server"));
-    assert!(response.headers.get("server").unwrap().contains("hdl_sv/2.0.0"));
+    assert!(response
+        .headers
+        .get("server")
+        .unwrap()
+        .contains("hdl_sv/2.0.0"));
     assert!(response.headers.contains_key("cache-control"));
     assert!(response.headers.contains_key("accept-ranges"));
 }
@@ -304,19 +375,19 @@ fn test_enhanced_security_headers() {
 #[test]
 fn test_authentication_flow() {
     let server = TestServer::new(Some("user".to_string()), Some("pass".to_string()));
-    
+
     // Test without credentials
     let url = format!("http://{}/", server.addr);
     let response = HttpClient::get(&url);
     assert_eq!(response.status_code, 401);
     assert!(response.headers.contains_key("www-authenticate"));
     assert!(response.body.contains("401"));
-    
+
     // Test with correct credentials
     let response = HttpClient::get_with_auth(&url, "user", "pass");
     assert_eq!(response.status_code, 200);
     assert!(response.body.contains("Name"));
-    
+
     // Test with wrong credentials
     let response = HttpClient::get_with_auth(&url, "wrong", "credentials");
     assert_eq!(response.status_code, 401);
@@ -326,7 +397,7 @@ fn test_authentication_flow() {
 fn test_rate_limiting_simulation() {
     let server = TestServer::new(None, None);
     let url = format!("http://{}/test.txt", server.addr);
-    
+
     // Make several requests quickly to test rate limiting
     // Note: In real scenarios, rate limiting would kick in after many requests
     // This test verifies the server handles multiple concurrent requests gracefully
@@ -336,7 +407,7 @@ fn test_rate_limiting_simulation() {
             thread::spawn(move || HttpClient::get(&url))
         })
         .collect();
-    
+
     let mut success_count = 0;
     for handle in handles {
         let response = handle.join().unwrap();
@@ -344,7 +415,7 @@ fn test_rate_limiting_simulation() {
             success_count += 1;
         }
     }
-    
+
     // All requests should succeed in this test scenario
     assert!(success_count >= 8); // Allow for some variance
 }
@@ -352,14 +423,14 @@ fn test_rate_limiting_simulation() {
 #[test]
 fn test_nested_directory_access() {
     let server = TestServer::new(None, None);
-    
+
     // Test subdirectory listing
     let url = format!("http://{}/subdir/", server.addr);
     let response = HttpClient::get(&url);
     assert_eq!(response.status_code, 200);
     assert!(response.body.contains("nested.txt"));
     assert!(response.body.contains("/subdir/"));
-    
+
     // Test nested file access
     let url = format!("http://{}/subdir/nested.txt", server.addr);
     let response = HttpClient::get(&url);
@@ -370,12 +441,12 @@ fn test_nested_directory_access() {
 #[test]
 fn test_path_traversal_security() {
     let server = TestServer::new(None, None);
-    
+
     // Attempt path traversal attack
     let url = format!("http://{}/../../etc/passwd", server.addr);
     let response = HttpClient::get(&url);
     assert_eq!(response.status_code, 403); // Should be forbidden
-    
+
     // Another traversal attempt
     let url = format!("http://{}/../../../", server.addr);
     let response = HttpClient::get(&url);
@@ -385,17 +456,17 @@ fn test_path_traversal_security() {
 #[test]
 fn test_malformed_requests() {
     use std::io::Write;
-    
+
     let server = TestServer::new(None, None);
-    
+
     // Send malformed HTTP request
     let mut stream = TcpStream::connect(server.addr).unwrap();
     stream.write_all(b"INVALID REQUEST\r\n\r\n").unwrap();
-    
+
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
     reader.read_line(&mut status_line).unwrap();
-    
+
     assert!(status_line.contains("400") || status_line.contains("Bad Request"));
 }
 
@@ -404,11 +475,11 @@ fn test_large_file_handling() {
     let server = TestServer::new(None, None);
     let url = format!("http://{}/large.txt", server.addr);
     let response = HttpClient::get(&url);
-    
+
     assert_eq!(response.status_code, 200);
     assert!(response.body.contains("Line 0 of a large file"));
     assert!(response.body.contains("Line 999 of a large file"));
-    
+
     // Check proper content length (allow for small variations due to line endings)
     if let Some(content_length) = response.headers.get("content-length") {
         let length: usize = content_length.parse().unwrap();
@@ -429,14 +500,14 @@ fn test_http_compliance() {
     let server = TestServer::new(None, None);
     let url = format!("http://{}/test.txt", server.addr);
     let response = HttpClient::get(&url);
-    
+
     assert_eq!(response.status_code, 200);
-    
+
     // Check for required HTTP headers
     assert!(response.headers.contains_key("content-type"));
     assert!(response.headers.contains_key("content-length"));
     assert!(response.headers.contains_key("server"));
-    
+
     // Verify server identification
     assert_eq!(response.headers.get("server").unwrap(), "hdl_sv/2.0.0");
 }

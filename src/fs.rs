@@ -9,53 +9,53 @@ use std::time::SystemTime;
 /// Enhanced directory listing using modular templates - dark mode only
 pub fn generate_directory_listing(path: &Path, request_path: &str) -> Result<String, AppError> {
     debug!("Generating directory listing for: '{}'", path.display());
-    
+
     let mut entries = Vec::new();
-    
+
     // Collect and sort entries
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let metadata = entry.metadata()?;
         let file_name = entry.file_name().into_string().unwrap_or_default();
-        
+
         entries.push((entry.path(), file_name, metadata));
     }
-    
+
     // Sort: directories first, then alphabetically
     entries.sort_by(|a, b| {
         let a_is_dir = a.2.is_dir();
         let b_is_dir = b.2.is_dir();
-        
+
         match (a_is_dir, b_is_dir) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
         }
     });
-    
+
     let display_path = if request_path.is_empty() || request_path == "/" {
         "/"
     } else {
         request_path
     };
-    
+
     // Prepare entries data for template
     let mut template_entries = Vec::new();
-    
+
     for (_entry_path, file_name, metadata) in entries {
         let is_dir = metadata.is_dir();
         let link_name = if is_dir {
-            format!("{}/", file_name)
+            format!("{file_name}/")
         } else {
             file_name.clone()
         };
-        
+
         let size = if is_dir {
             "-".to_string()
         } else {
             format_file_size(metadata.len())
         };
-        
+
         let modified = metadata
             .modified()
             .ok()
@@ -65,14 +65,14 @@ pub fn generate_directory_listing(path: &Path, request_path: &str) -> Result<Str
                 format_timestamp(timestamp)
             })
             .unwrap_or_else(|| "-".to_string());
-        
+
         template_entries.push((link_name, size, modified));
     }
-    
+
     // Create template engine and load templates
     let mut engine = TemplateEngine::new();
     engine.load_all_templates()?;
-    
+
     // Render using template
     engine.render_directory_listing(display_path, &template_entries, template_entries.len())
 }
@@ -81,19 +81,19 @@ pub fn generate_directory_listing(path: &Path, request_path: &str) -> Result<Str
 fn format_file_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     const THRESHOLD: u64 = 1024;
-    
+
     if size == 0 {
         return "0 B".to_string();
     }
-    
+
     let mut size_f = size as f64;
     let mut unit_index = 0;
-    
+
     while size_f >= THRESHOLD as f64 && unit_index < UNITS.len() - 1 {
         size_f /= THRESHOLD as f64;
         unit_index += 1;
     }
-    
+
     if unit_index == 0 {
         format!("{} {}", size, UNITS[unit_index])
     } else {
@@ -107,25 +107,25 @@ fn format_timestamp(timestamp: u64) -> String {
     let seconds_per_minute = 60;
     let seconds_per_hour = 3600;
     let seconds_per_day = 86400;
-    
+
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     let age = now.saturating_sub(timestamp);
-    
+
     if age < seconds_per_minute {
         "Just now".to_string()
     } else if age < seconds_per_hour {
         let minutes = age / seconds_per_minute;
-        format!("{} min ago", minutes)
+        format!("{minutes} min ago")
     } else if age < seconds_per_day {
         let hours = age / seconds_per_hour;
-        format!("{} hr ago", hours)
+        format!("{hours} hr ago")
     } else if age < seconds_per_day * 30 {
         let days = age / seconds_per_day;
-        format!("{} days ago", days)
+        format!("{days} days ago")
     } else {
         // Rough date calculation for older files
         let days_since_epoch = timestamp / seconds_per_day;
@@ -136,8 +136,6 @@ fn format_timestamp(timestamp: u64) -> String {
         format!("{:04}-{:02}-{:02}", year, month.min(12), day.min(31))
     }
 }
-
-
 
 /// Holds details about a file to be streamed.
 pub struct FileDetails {

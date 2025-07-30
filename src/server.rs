@@ -32,40 +32,40 @@ impl RateLimiter {
             max_concurrent_per_ip,
         }
     }
-    
+
     pub fn check_rate_limit(&self, ip: IpAddr) -> bool {
         let mut connections = self.connections.lock().unwrap();
         let now = Instant::now();
-        
+
         let conn_info = connections.entry(ip).or_insert(ConnectionInfo {
             request_count: 0,
             last_reset: now,
             active_connections: 0,
         });
-        
+
         // Reset counter if more than a minute has passed
         if now.duration_since(conn_info.last_reset) >= Duration::from_secs(60) {
             conn_info.request_count = 0;
             conn_info.last_reset = now;
         }
-        
+
         // Check concurrent connections
         if conn_info.active_connections >= self.max_concurrent_per_ip {
-            warn!("Rate limit exceeded for {}: too many concurrent connections", ip);
+            warn!("Rate limit exceeded for {ip}: too many concurrent connections");
             return false;
         }
-        
+
         // Check request rate
         if conn_info.request_count >= self.max_requests_per_minute {
-            warn!("Rate limit exceeded for {}: too many requests per minute", ip);
+            warn!("Rate limit exceeded for {ip}: too many requests per minute");
             return false;
         }
-        
+
         conn_info.request_count += 1;
         conn_info.active_connections += 1;
         true
     }
-    
+
     pub fn release_connection(&self, ip: IpAddr) {
         if let Ok(mut connections) = self.connections.lock() {
             if let Some(conn_info) = connections.get_mut(&ip) {
@@ -73,11 +73,11 @@ impl RateLimiter {
             }
         }
     }
-    
+
     pub fn cleanup_old_entries(&self) {
         let mut connections = self.connections.lock().unwrap();
         let now = Instant::now();
-        
+
         connections.retain(|_, info| {
             now.duration_since(info.last_reset) < Duration::from_secs(300) // Keep for 5 minutes
         });
@@ -104,37 +104,49 @@ impl ServerStats {
             start_time: Arc::new(Mutex::new(Some(Instant::now()))),
         }
     }
-    
+
     pub fn record_request(&self, success: bool, bytes: u64) {
         if let Ok(mut total) = self.total_requests.lock() {
             *total += 1;
         }
-        
+
         if success {
             if let Ok(mut successful) = self.successful_requests.lock() {
                 *successful += 1;
             }
-        } else {
-            if let Ok(mut errors) = self.error_requests.lock() {
-                *errors += 1;
-            }
+        } else if let Ok(mut errors) = self.error_requests.lock() {
+            *errors += 1;
         }
-        
+
         if let Ok(mut total_bytes) = self.bytes_served.lock() {
             *total_bytes += bytes;
         }
     }
-    
+
     pub fn get_stats(&self) -> (u64, u64, u64, u64, Duration) {
-        let total = *self.total_requests.lock().unwrap_or_else(|_| panic!("Stats lock poisoned"));
-        let successful = *self.successful_requests.lock().unwrap_or_else(|_| panic!("Stats lock poisoned"));
-        let errors = *self.error_requests.lock().unwrap_or_else(|_| panic!("Stats lock poisoned"));
-        let bytes = *self.bytes_served.lock().unwrap_or_else(|_| panic!("Stats lock poisoned"));
-        let uptime = self.start_time.lock()
+        let total = *self
+            .total_requests
+            .lock()
+            .unwrap_or_else(|_| panic!("Stats lock poisoned"));
+        let successful = *self
+            .successful_requests
+            .lock()
+            .unwrap_or_else(|_| panic!("Stats lock poisoned"));
+        let errors = *self
+            .error_requests
+            .lock()
+            .unwrap_or_else(|_| panic!("Stats lock poisoned"));
+        let bytes = *self
+            .bytes_served
+            .lock()
+            .unwrap_or_else(|_| panic!("Stats lock poisoned"));
+        let uptime = self
+            .start_time
+            .lock()
             .unwrap_or_else(|_| panic!("Stats lock poisoned"))
             .map(|start| start.elapsed())
             .unwrap_or_default();
-        
+
         (total, successful, errors, bytes, uptime)
     }
 }
@@ -150,27 +162,27 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 impl ThreadPool {
     pub fn new(size: usize) -> ThreadPool {
         assert!(size > 0);
-        
+
         let (sender, receiver) = mpsc::channel();
         let receiver = Arc::new(Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
-        
+
         for id in 0..size {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
-        
+
         ThreadPool {
             workers,
             sender: Some(sender),
         }
     }
-    
+
     pub fn execute<F>(&self, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        
+
         if let Some(ref sender) = self.sender {
             if sender.send(job).is_err() {
                 warn!("Failed to send job to thread pool");
@@ -182,7 +194,7 @@ impl ThreadPool {
 impl Drop for ThreadPool {
     fn drop(&mut self) {
         drop(self.sender.take());
-        
+
         for worker in &mut self.workers {
             if let Some(thread) = worker.thread.take() {
                 if thread.join().is_err() {
@@ -202,7 +214,7 @@ impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
         let thread = thread::spawn(move || loop {
             let message = receiver.lock().unwrap().recv();
-            
+
             match message {
                 Ok(job) => {
                     job();
@@ -212,7 +224,7 @@ impl Worker {
                 }
             }
         });
-        
+
         Worker {
             id,
             thread: Some(thread),
@@ -307,59 +319,59 @@ pub fn run_server(
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 let client_ip = peer_addr.ip();
-                
+
                 // Check rate limits
                 if !rate_limiter.check_rate_limit(client_ip) {
-                    warn!("🚫 Connection from {} rejected due to rate limiting", client_ip);
+                    warn!("🚫 Connection from {client_ip} rejected due to rate limiting");
                     drop(stream); // Close connection immediately
                     continue;
                 }
-                
+
                 // Ensure the accepted stream is in blocking mode
                 if let Err(e) = stream.set_nonblocking(false) {
-                    error!("Failed to set stream to blocking mode: {}", e);
+                    error!("Failed to set stream to blocking mode: {e}");
                     rate_limiter.release_connection(client_ip);
                     continue;
                 }
-                
+
                 let (
-                        base_dir,
-                        allowed_extensions,
-                        username,
-                        password,
+                    base_dir,
+                    allowed_extensions,
+                    username,
+                    password,
+                    chunk_size,
+                    rate_limiter,
+                    stats,
+                ) = (
+                    base_dir.clone(),
+                    allowed_extensions.clone(),
+                    username.clone(),
+                    password.clone(),
+                    cli.chunk_size,
+                    rate_limiter.clone(),
+                    stats.clone(),
+                );
+
+                pool.execute(move || {
+                    let result = handle_client_with_stats(
+                        stream,
+                        peer_addr,
+                        &base_dir,
+                        &allowed_extensions,
+                        &username,
+                        &password,
                         chunk_size,
-                        rate_limiter,
-                        stats,
-                    ) = (
-                        base_dir.clone(),
-                        allowed_extensions.clone(),
-                        username.clone(),
-                        password.clone(),
-                        cli.chunk_size,
-                        rate_limiter.clone(),
-                        stats.clone(),
+                        &stats,
                     );
-                    
-                    pool.execute(move || {
-                        let result = handle_client_with_stats(
-                            stream,
-                            peer_addr,
-                            &base_dir,
-                            &allowed_extensions,
-                            &username,
-                            &password,
-                            chunk_size,
-                            &stats,
-                        );
-                        
-                        // Release rate limit connection
-                        rate_limiter.release_connection(client_ip);
-                        
-                        // Log any errors
-                        if let Err(e) = result {
-                            warn!("⚠️  Client handling error: {}", e);
-                        }
-                    });
+
+                    // Release rate limit connection
+                    rate_limiter.release_connection(client_ip);
+
+                    // Log any errors
+                    if let Err(e) = result {
+                        warn!("⚠️  Client handling error: {e}");
+                    }
+                });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -387,6 +399,7 @@ pub fn run_server(
 }
 
 /// Enhanced client handler with statistics tracking
+#[allow(clippy::too_many_arguments)]
 fn handle_client_with_stats(
     stream: std::net::TcpStream,
     peer_addr: SocketAddr,
@@ -399,7 +412,7 @@ fn handle_client_with_stats(
 ) -> Result<(), AppError> {
     let start = Instant::now();
     let bytes_sent = 0u64;
-    
+
     // Use existing handle_client but with error tracking
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         handle_client(
@@ -411,21 +424,26 @@ fn handle_client_with_stats(
             chunk_size,
         );
     }));
-    
+
     let success = result.is_ok();
     let processing_time = start.elapsed();
-    
+
     // Record statistics
     stats.record_request(success, bytes_sent);
-    
+
     if processing_time > Duration::from_millis(1000) {
-        warn!("⏱️  Slow request from {}: {}ms", peer_addr.ip(), processing_time.as_millis());
+        warn!(
+            "⏱️  Slow request from {}: {}ms",
+            peer_addr.ip(),
+            processing_time.as_millis()
+        );
     }
-    
-    if let Err(_) = result {
-        return Err(AppError::InternalServerError("Client handler panicked".to_string()));
+
+    if result.is_err() {
+        return Err(AppError::InternalServerError(
+            "Client handler panicked".to_string(),
+        ));
     }
-    
+
     Ok(())
 }
-

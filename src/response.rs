@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::templates::{TemplateEngine, get_error_description};
+use crate::templates::{get_error_description, TemplateEngine};
 use log::{debug, error};
 use std::io::prelude::*;
 use std::net::TcpStream;
@@ -34,34 +34,32 @@ pub fn get_mime_type(path: &Path) -> &'static str {
 /// Generate error pages using modular templates - dark mode only
 fn generate_error_page(status_code: u16, status_text: &str) -> String {
     let mut engine = TemplateEngine::new();
-    if let Err(_) = engine.load_all_templates() {
+    if engine.load_all_templates().is_err() {
         // Fallback to simple error page if templates can't be loaded
         return format!(
             r#"<!DOCTYPE html>
 <html>
-<head><title>Error {}</title>
+<head><title>Error {status_code}</title>
 <style>body{{background:#1e293b;color:#f1f5f9;font-family:sans-serif;text-align:center;padding:2rem}}</style>
 </head>
-<body><h1>{}</h1><p>{}</p><a href="/" style="color:#60a5fa">← Back to Files</a></body>
-</html>"#,
-            status_code, status_code, status_text
+<body><h1>{status_code}</h1><p>{status_text}</p><a href="/" style="color:#60a5fa">← Back to Files</a></body>
+</html>"#
         );
     }
 
     let description = get_error_description(status_code);
-    
+
     engine.render_error_page(status_code, status_text, description)
         .unwrap_or_else(|_| {
             // Fallback if template rendering fails
             format!(
                 r#"<!DOCTYPE html>
 <html>
-<head><title>Error {}</title>
+<head><title>Error {status_code}</title>
 <style>body{{background:#1e293b;color:#f1f5f9;font-family:sans-serif;text-align:center;padding:2rem}}</style>
 </head>
-<body><h1>{}</h1><p>{}</p><a href="/" style="color:#60a5fa">← Back to Files</a></body>
-</html>"#,
-                status_code, status_code, status_text
+<body><h1>{status_code}</h1><p>{status_text}</p><a href="/" style="color:#60a5fa">← Back to Files</a></body>
+</html>"#
             )
         })
 }
@@ -89,19 +87,26 @@ impl HttpResponse {
     }
 
     pub fn with_html_body(mut self, body: String) -> Self {
-        self.headers.push(("Content-Type".to_string(), "text/html; charset=utf-8".to_string()));
+        self.headers.push((
+            "Content-Type".to_string(),
+            "text/html; charset=utf-8".to_string(),
+        ));
         self.body = body.into_bytes();
         self
     }
 
     pub fn with_file_body(mut self, body: Vec<u8>, mime_type: &str) -> Self {
-        self.headers.push(("Content-Type".to_string(), mime_type.to_string()));
+        self.headers
+            .push(("Content-Type".to_string(), mime_type.to_string()));
         self.body = body;
         self
     }
 
     pub fn with_auth_challenge(mut self) -> Self {
-        self.headers.push(("WWW-Authenticate".to_string(), "Basic realm=\"Restricted\"".to_string()));
+        self.headers.push((
+            "WWW-Authenticate".to_string(),
+            "Basic realm=\"Restricted\"".to_string(),
+        ));
         self
     }
 
@@ -113,37 +118,39 @@ impl HttpResponse {
     pub fn send(self, stream: &mut TcpStream, log_prefix: &str) -> Result<(), AppError> {
         debug!(
             "{} Sending response - Status: {}, Body Length: {}",
-            log_prefix, self.status_code, self.body.len()
+            log_prefix,
+            self.status_code,
+            self.body.len()
         );
 
         let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
-        
+
         // Add Content-Length header
         response.push_str(&format!("Content-Length: {}\r\n", self.body.len()));
-        
+
         // Add all headers
         for (name, value) in &self.headers {
-            response.push_str(&format!("{}: {}\r\n", name, value));
+            response.push_str(&format!("{name}: {value}\r\n"));
         }
-        
+
         response.push_str("\r\n");
 
         // Send headers
         stream.write_all(response.as_bytes()).map_err(|e| {
-            error!("{} Failed to write response headers: {}", log_prefix, e);
+            error!("{log_prefix} Failed to write response headers: {e}");
             AppError::Io(e)
         })?;
 
         // Send body
         if !self.body.is_empty() {
             stream.write_all(&self.body).map_err(|e| {
-                error!("{} Failed to write response body: {}", log_prefix, e);
+                error!("{log_prefix} Failed to write response body: {e}");
                 AppError::Io(e)
             })?;
         }
 
         stream.flush().map_err(|e| {
-            error!("{} Failed to flush response: {}", log_prefix, e);
+            error!("{log_prefix} Failed to flush response: {e}");
             AppError::Io(e)
         })?;
 
@@ -155,11 +162,11 @@ impl HttpResponse {
 pub fn create_error_response(status_code: u16, status_text: &str) -> HttpResponse {
     let error_page = generate_error_page(status_code, status_text);
     let mut response = HttpResponse::new(status_code, status_text).with_html_body(error_page);
-    
+
     if status_code == 401 {
         response = response.with_auth_challenge();
     }
-    
+
     response
 }
 
@@ -176,6 +183,6 @@ pub fn send_response(
     } else {
         HttpResponse::new(status_code, status_text).with_html_body(body.to_string())
     };
-    
+
     response.send(stream, log_prefix)
 }
