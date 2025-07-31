@@ -239,36 +239,17 @@ fn normalize_path(path: &Path) -> Result<PathBuf, AppError> {
     Ok(components.iter().collect())
 }
 
-/// Handle static asset requests for CSS/JS files
+/// Handle static asset requests for CSS/JS files using embedded resources
 fn handle_static_asset(path: &str) -> Result<Response, AppError> {
-    use std::fs;
+    use crate::templates::TemplateEngine;
 
-    // Map /_static/ URLs to templates/ directory
+    // Map /_static/ URLs to embedded templates
     let asset_path = path.strip_prefix("/_static/").unwrap_or("");
-    let file_path = format!("templates/{asset_path}");
 
-    // Security check - ensure path is within templates directory
-    let canonical_path = std::path::Path::new(&file_path)
-        .canonicalize()
-        .map_err(|_| AppError::NotFound)?;
-
-    let templates_dir = std::path::Path::new("templates")
-        .canonicalize()
-        .map_err(|_| AppError::InternalServerError("Templates directory not found".to_string()))?;
-
-    if !canonical_path.starts_with(&templates_dir) {
-        return Err(AppError::Forbidden);
-    }
-
-    // Read and serve the file
-    let content = fs::read(&canonical_path).map_err(|_| AppError::NotFound)?;
-
-    // Determine content type
-    let content_type = match canonical_path.extension().and_then(|ext| ext.to_str()) {
-        Some("css") => "text/css",
-        Some("js") => "application/javascript",
-        _ => "text/plain",
-    };
+    let engine = TemplateEngine::new();
+    let (content, content_type) = engine
+        .get_static_asset(asset_path)
+        .ok_or(AppError::NotFound)?;
 
     Ok(Response {
         status_code: 200,
@@ -282,7 +263,7 @@ fn handle_static_asset(path: &str) -> Result<Response, AppError> {
             );
             map
         },
-        body: ResponseBody::Text(String::from_utf8_lossy(&content).to_string()),
+        body: ResponseBody::Text(content.to_string()),
     })
 }
 

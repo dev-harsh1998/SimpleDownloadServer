@@ -2,8 +2,14 @@
 
 use crate::error::AppError;
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
+
+// Embed templates at compile time
+const DIRECTORY_INDEX_HTML: &str = include_str!("../templates/directory/index.html");
+const DIRECTORY_STYLES_CSS: &str = include_str!("../templates/directory/styles.css");
+const DIRECTORY_SCRIPT_JS: &str = include_str!("../templates/directory/script.js");
+const ERROR_PAGE_HTML: &str = include_str!("../templates/error/page.html");
+const ERROR_STYLES_CSS: &str = include_str!("../templates/error/styles.css");
+const ERROR_SCRIPT_JS: &str = include_str!("../templates/error/script.js");
 
 /// Template loader and renderer for modular HTML templates
 pub struct TemplateEngine {
@@ -17,35 +23,35 @@ impl Default for TemplateEngine {
 }
 
 impl TemplateEngine {
-    /// Create a new template engine
+    /// Create a new template engine with embedded templates
     pub fn new() -> Self {
-        Self {
-            templates: HashMap::new(),
-        }
+        let mut templates = HashMap::new();
+
+        // Load embedded templates
+        templates.insert(
+            "directory_index".to_string(),
+            DIRECTORY_INDEX_HTML.to_string(),
+        );
+        templates.insert("error_page".to_string(), ERROR_PAGE_HTML.to_string());
+
+        Self { templates }
     }
 
-    /// Load template from file system
-    pub fn load_template(&mut self, name: &str, path: &str) -> Result<(), AppError> {
-        let content = fs::read_to_string(path).map_err(|e| {
-            AppError::InternalServerError(format!("Failed to load template {name}: {e}"))
-        })?;
-        self.templates.insert(name.to_string(), content);
-        Ok(())
-    }
-
-    /// Load all templates from the templates directory
+    /// Load all templates - now uses embedded templates
     pub fn load_all_templates(&mut self) -> Result<(), AppError> {
-        // Load directory templates
-        if Path::new("templates/directory").exists() {
-            self.load_template("directory_index", "templates/directory/index.html")?;
-        }
-
-        // Load error templates
-        if Path::new("templates/error").exists() {
-            self.load_template("error_page", "templates/error/page.html")?;
-        }
-
+        // Templates are already loaded in new(), this is kept for compatibility
         Ok(())
+    }
+
+    /// Get embedded static asset content
+    pub fn get_static_asset(&self, path: &str) -> Option<(&'static str, &'static str)> {
+        match path {
+            "directory/styles.css" => Some((DIRECTORY_STYLES_CSS, "text/css")),
+            "directory/script.js" => Some((DIRECTORY_SCRIPT_JS, "application/javascript")),
+            "error/styles.css" => Some((ERROR_STYLES_CSS, "text/css")),
+            "error/script.js" => Some((ERROR_SCRIPT_JS, "application/javascript")),
+            _ => None,
+        }
     }
 
     /// Render a template with variables

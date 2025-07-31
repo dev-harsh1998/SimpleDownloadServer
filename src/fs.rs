@@ -69,9 +69,8 @@ pub fn generate_directory_listing(path: &Path, request_path: &str) -> Result<Str
         template_entries.push((link_name, size, modified));
     }
 
-    // Create template engine and load templates
-    let mut engine = TemplateEngine::new();
-    engine.load_all_templates()?;
+    // Create template engine with embedded templates
+    let engine = TemplateEngine::new();
 
     // Render using template
     engine.render_directory_listing(display_path, &template_entries, template_entries.len())

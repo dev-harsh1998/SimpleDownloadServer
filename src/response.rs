@@ -31,22 +31,9 @@ pub fn get_mime_type(path: &Path) -> &'static str {
     }
 }
 
-/// Generate error pages using modular templates - dark mode only
+/// Generate error pages using embedded templates - dark mode only
 fn generate_error_page(status_code: u16, status_text: &str) -> String {
-    let mut engine = TemplateEngine::new();
-    if engine.load_all_templates().is_err() {
-        // Fallback to simple error page if templates can't be loaded
-        return format!(
-            r#"<!DOCTYPE html>
-<html>
-<head><title>Error {status_code}</title>
-<style>body{{background:#1e293b;color:#f1f5f9;font-family:sans-serif;text-align:center;padding:2rem}}</style>
-</head>
-<body><h1>{status_code}</h1><p>{status_text}</p><a href="/" style="color:#60a5fa">← Back to Files</a></body>
-</html>"#
-        );
-    }
-
+    let engine = TemplateEngine::new();
     let description = get_error_description(status_code);
 
     engine.render_error_page(status_code, status_text, description)
